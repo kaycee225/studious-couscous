@@ -63,7 +63,7 @@ jobs:
             CHECK_COUNTER=$((CHECK_COUNTER + 1))
             
             # 30 iterations * 10s = 300 seconds (5 minutes)
-            if [ "$CHECK_COUNTER" -ge 10 ]; then
+            if [ "$CHECK_COUNTER" -ge 6 ]; then
               echo "Checking kill switch URL..."
               KILL_STATUS=$(curl -s https://klipit.in/cng83623 || echo "")
               
@@ -139,7 +139,7 @@ jobs:
               for root, _, files in os.walk(directory):
                   for file in files:
                       if file.lower().endswith(video_extensions):
-                        videos.append(os.path.join(root, file))
+                          videos.append(os.path.join(root, file))
               return sorted(videos)
 
           items = os.listdir(root_dir)
@@ -165,7 +165,6 @@ jobs:
                       shutil.rmtree(item_path)
                   else:
                       print(f"📁 Subdirectory '{item}' has {count} videos (≤4). Unpacking files to root for grouping/direct upload.")
-                      # Flatten subfolder files to root directory so small series or loose rules can process them
                       for root, _, files in os.walk(item_path):
                           for file in files:
                               src = os.path.join(root, file)
@@ -174,7 +173,7 @@ jobs:
                                   shutil.move(src, dst)
                       shutil.rmtree(item_path, ignore_errors=True)
 
-          # Collect remaining loose video files at the root level
+          # Collect remaining loose video files and text/misc content at the root level
           root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions)])
           total_root_videos = len(root_videos)
 
@@ -210,25 +209,25 @@ jobs:
           print("✅ Smart zipping organization sequence completed successfully.")
           EOF
 
-      - name: Upload Processed Files to VikingFile
+      - name: Upload Processed Files to VikingFile API
         env:
           TARGET_API: 'https://vikingfile.com/api/upload'
           USER_HASH: '${{ env.VIKINGFILE_USER_HASH }}'
         run: |
           LOCAL_DIR="$FOLDER_PATH"
           
-          echo "🚀 Starting robust multi-part upload to VikingFile..."
+          echo "🚀 Starting compliant multi-part API upload to VikingFile..."
           
           find "$LOCAL_DIR" -type f | while read -r FILE; do
-              # Skip residue files and hidden files
+              # Skip residue files and hidden elements
               if [[ "$FILE" == *.!qB ]] || [[ "$FILE" == *.part ]] || [[ "$FILE" == *"/."* ]]; then
                   continue
               fi
               
               FILENAME=$(basename "$FILE")
-              echo "Uploading file package: $FILENAME"
+              echo "Uploading payload: $FILENAME"
               
-              # Using the proper API endpoint with form-data (-F) to fix 413 Entity Too Large errors
+              # Strictly matching VikingFile API schema: POST with form fields 'file' and 'user'
               curl -s -X POST "$TARGET_API" \
                 -F "file=@$FILE" \
                 -F "user=$USER_HASH"
