@@ -164,7 +164,7 @@ jobs:
                                   zipf.write(file_path, arcname)
                       shutil.rmtree(item_path)
                   else:
-                      print(f"📁 Subdirectory '{item}' has {count} videos (≤4). Unpacking files to root for grouping/direct upload.")
+                      print(f"📁 Subdirectory '{item}' has {count} videos (≤4). Unpacking files to root for loose handling.")
                       for root, _, files in os.walk(item_path):
                           for file in files:
                               src = os.path.join(root, file)
@@ -173,12 +173,12 @@ jobs:
                                   shutil.move(src, dst)
                       shutil.rmtree(item_path, ignore_errors=True)
 
-          # Collect remaining loose video files and text/misc content at the root level
+          # Collect remaining loose video files at root level
           root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions)])
           total_root_videos = len(root_videos)
 
+          # STRICT RULE: Only zip if strictly > 3 files. Otherwise, leave unzipped.
           if total_root_videos > 3:
-              # Series (> 3 video files): Zipped together into {first episode file name}.zip
               first_ep_name = os.path.splitext(os.path.basename(root_videos[0]))[0]
               zip_name = f"{first_ep_name}.zip"
               zip_path = os.path.join(root_dir, zip_name)
@@ -188,49 +188,49 @@ jobs:
                       zipf.write(v, os.path.basename(v))
               for v in root_videos:
                   os.remove(v)
-                  
-          elif 1 <= total_root_videos <= 3:
-              # Small Series (≤ 3 video files): Grouped into a single zip file with concise name derived from titles
-              names = [os.path.splitext(os.path.basename(v))[0] for v in root_videos]
-              concise_base = "_".join(names)[:50].strip("_")
-              if not concise_base:
-                  concise_base = "small_series_bundle"
-              zip_name = f"{concise_base}.zip"
-              zip_path = os.path.join(root_dir, zip_name)
-              print(f"🗜️ Small series detected ({total_root_videos} videos ≤ 3). Zipping into {zip_name}")
-              with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                  for v in root_videos:
-                      zipf.write(v, os.path.basename(v))
-              for v in root_videos:
-                  os.remove(v)
           else:
-              print("📂 No series video clusters found for root grouping. Non-series / individual files will be uploaded directly.")
+              print(f"📂 Found {total_root_videos} video file(s) (≤3). Skipping zipping as requested — files will be uploaded directly.")
 
           print("✅ Smart zipping organization sequence completed successfully.")
           EOF
 
-      - name: Upload Processed Files to VikingFile API
+      - name: Upload Processed Files via Python Requests
         env:
           TARGET_API: 'https://vikingfile.com/api/upload'
           USER_HASH: '${{ env.VIKINGFILE_USER_HASH }}'
         run: |
-          LOCAL_DIR="$FOLDER_PATH"
-          
-          echo "🚀 Starting compliant multi-part API upload to VikingFile..."
-          
-          find "$LOCAL_DIR" -type f | while read -r FILE; do
-              # Skip residue files and hidden elements
-              if [[ "$FILE" == *.!qB ]] || [[ "$FILE" == *.part ]] || [[ "$FILE" == *"/."* ]]; then
-                  continue
-              fi
-              
-              FILENAME=$(basename "$FILE")
-              echo "Uploading payload: $FILENAME"
-              
-              # Strictly matching VikingFile API schema: POST with form fields 'file' and 'user'
-              curl -s -X POST "$TARGET_API" \
-                -F "file=@$FILE" \
-                -F "user=$USER_HASH"
-              
-              echo ""
-          done
+          python3 - << 'EOF'
+          import os
+          import requests
+
+          folder_path = "downloaded_files"
+          target_api = os.environ.get("TARGET_API")
+          user_hash = os.environ.get("VIKINGFILE_USER_HASH")
+
+          if not os.path.exists(folder_path):
+              print("❌ Target folder does not exist.")
+              exit(0)
+
+          print(f"🚀 Starting Python-powered multi-part upload to VikingFile...")
+
+          for root, _, files in os.walk(folder_path):
+              for file in files:
+                  if file.endswith(('.!qB', '.part')) or '/.' in file:
+                      continue
+                  
+                  file_path = os.path.join(root, file)
+                  print(f"Uploading file: {file} ({os.path.getsize(file_path) / (1024*1024):.2f} MB)")
+
+                  try:
+                      with open(file_path, 'rb') as f:
+                          files_payload = {'file': (file, f)}
+                          data_payload = {'user': user_hash}
+                          
+                          response = requests.post(target_api, files=files_payload, data=data_payload, timeout=300)
+                          print(f"Status Code: {response.status_code}")
+                          print(f"Response: {response.text[:300]}")
+                  except Exception as e:
+                      print(f"❌ Failed to upload {file}: {e}")
+
+          print("✅ Upload batch procedure finished.")
+          EOF
