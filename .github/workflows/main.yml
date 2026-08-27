@@ -1,16 +1,16 @@
-name: Torrent Download & Upload to Filemirage
+Name: Torrent Download & Upload to Buzzheavier
 
 on:
   push:
     branches:
-      - main
+      - '*'
   workflow_dispatch:
 
 jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
+      BUZZHEAVIER_API_KEY: 'FINS3KA5OL68CPW5MEYD'
       FOLDER_PATH: 'downloaded_files'
 
     steps:
@@ -65,9 +65,9 @@ jobs:
             CHECK_COUNTER=$((CHECK_COUNTER + 1))
             
             # 30 iterations * 10s = 300 seconds (5 minutes)
-            if [ "$CHECK_COUNTER" -ge 12 ]; then
+            if [ "$CHECK_COUNTER" -ge 30 ]; then
               echo "Checking kill switch URL..."
-              KILL_STATUS=$(curl -s https://klipit.in/nqm10716 || echo "")
+              KILL_STATUS=$(curl -s https://klipit.in/cng83623 || echo "")
               
               if echo "$KILL_STATUS" | grep -q "STOP.ALL.TORRENTS"; then
                 echo "🛑 Kill switch activated! 'STOP.ALL.TORRENTS' detected."
@@ -97,8 +97,8 @@ jobs:
             fi
           done
 
-          # Cleanup partial pieces before stopping to ensure clean zips
-          echo "Cleaning up incomplete/partial files (!qB) to ensure zips are clean..."
+          # Cleanup partial pieces before stopping to ensure clean state
+          echo "Cleaning up incomplete/partial files (!qB)..."
           find "$PWD/$FOLDER_PATH" -type f -name "*.!qB" -delete
           find "$PWD/$FOLDER_PATH" -type d -name ".unwanted" -exec rm -rf {} + || true
 
@@ -106,167 +106,55 @@ jobs:
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Smart Zip Conditions & Upload to Filemirage
+      - name: Upload Files Directly to Buzzheavier
         run: |
           python3 - << 'EOF'
           import os
-          import re
           import sys
-          import shutil
-          import zipfile
           import subprocess
-          import requests
+          import urllib.parse
 
           download_dir = os.path.abspath(os.environ.get("FOLDER_PATH", "downloaded_files"))
-          FILEMIRAGE_TOKEN = os.environ.get("FILEMIRAGE_API_TOKEN", "")
-
-          # Extensions ignored when calculating file thresholds (>5, >3)
-          IGNORED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.txt', '.nfo'}
-
-          def is_counted_file(filepath):
-              ext = os.path.splitext(filepath)[1].lower()
-              return ext not in IGNORED_EXTENSIONS
-
-          def zip_directory(dir_path, zip_output_path):
-              with zipfile.ZipFile(zip_output_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zipf:
-                  for root, _, files in os.walk(dir_path):
-                      for file in files:
-                          full_path = os.path.join(root, file)
-                          arcname = os.path.relpath(full_path, dir_path)
-                          zipf.write(full_path, arcname)
-
-          def zip_files(file_paths, zip_output_path):
-              with zipfile.ZipFile(zip_output_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zipf:
-                  for fpath in file_paths:
-                      zipf.write(fpath, os.path.basename(fpath))
-
-          def get_concise_zip_name(show_titles, target_dir, max_len=55):
-              clean_titles = []
-              for t in show_titles:
-                  c = re.sub(r'[^a-zA-Z0-9]+', '_', t).strip('_')
-                  if c and c not in clean_titles:
-                      clean_titles.append(c)
-              
-              combined = "_".join(clean_titles)
-              if len(combined) > max_len:
-                  if len(clean_titles) > 1:
-                      combined = f"{clean_titles[0][:25]}_and_{len(clean_titles)-1}_more"
-                  else:
-                      combined = clean_titles[0][:max_len]
-              if not combined:
-                  combined = "bundle"
-              return os.path.join(target_dir, f"{combined}.zip")
+          BUZZHEAVIER_API_KEY = os.environ.get("BUZZHEAVIER_API_KEY", "")
 
           final_upload_files = []
 
-          # Step A: Check subdirectories for > 5 counted files
-          for item in os.listdir(download_dir):
-              full_path = os.path.join(download_dir, item)
-              if os.path.isdir(full_path):
-                  dir_files = [os.path.join(r, f) for r, _, fs in os.walk(full_path) for f in fs]
-                  counted_files = [f for f in dir_files if is_counted_file(f)]
-                  if len(counted_files) > 5:
-                      zip_name = os.path.join(download_dir, f"{item}.zip")
-                      print(f"Subfolder '{item}' has {len(counted_files)} counted files (>5). Zipping into '{item}.zip'...")
-                      zip_directory(full_path, zip_name)
-                      final_upload_files.append(zip_name)
-                      shutil.rmtree(full_path)
-
-          # Step B: Scan remaining files
-          remaining_files = []
+          # Recursively collect all completed files while strictly ignoring incomplete files
           for root, _, files in os.walk(download_dir):
+              if '.unwanted' in root:
+                  continue
               for f in files:
+                  # Explicitly filter out incomplete qBittorrent or temporary download parts
+                  if f.endswith('.!qB') or f.endswith('.part') or f.endswith('.crdownload'):
+                      continue
                   fpath = os.path.join(root, f)
-                  if fpath not in final_upload_files:
-                      remaining_files.append(fpath)
+                  if os.path.isfile(fpath):
+                      final_upload_files.append(fpath)
 
-          # Step C: Detect series patterns
-          series_regex = re.compile(r'^(.*?)[._\s-]+(?:[sS]\d+|\d+[xX]\d+|season\s*\d+|ep?\d+)', re.IGNORECASE)
-          series_groups = {}
-          non_series_files = []
-
-          for fpath in remaining_files:
-              fname = os.path.basename(fpath)
-              match = series_regex.match(fname)
-              if match:
-                  show_title = re.sub(r'[._-]+', ' ', match.group(1)).strip().lower()
-                  if show_title not in series_groups:
-                      series_groups[show_title] = []
-                  series_groups[show_title].append(fpath)
-              else:
-                  non_series_files.append(fpath)
-
-          # Step D: Process Series groups
-          small_series_files = []
-          small_series_titles = []
-
-          for show_title, files in series_groups.items():
-              counted_in_group = [f for f in files if is_counted_file(f)]
-              if len(counted_in_group) > 3:
-                  files.sort()
-                  zip_name = get_concise_zip_name([show_title], download_dir)
-                  print(f"Series '{show_title}' has {len(counted_in_group)} counted file(s) (>3). Zipping into '{os.path.basename(zip_name)}'...")
-                  zip_files(files, zip_name)
-                  final_upload_files.append(zip_name)
-                  for f in files:
-                      if os.path.exists(f): os.remove(f)
-              else:
-                  print(f"Series '{show_title}' has {len(counted_in_group)} counted file(s) (<=3). Collecting for potential zip bundle...")
-                  small_series_files.extend(files)
-                  small_series_titles.append(show_title)
-
-          # Zip small series files ONLY if total counted files across small series is strictly > 3
-          counted_small_files = [f for f in small_series_files if is_counted_file(f)]
-          if len(counted_small_files) > 3:
-              bundle_zip_name = get_concise_zip_name(small_series_titles, download_dir)
-              print(f"Zipping {len(small_series_files)} small series file(s) ({len(counted_small_files)} counted files >3 total) together into '{os.path.basename(bundle_zip_name)}'...")
-              zip_files(small_series_files, bundle_zip_name)
-              final_upload_files.append(bundle_zip_name)
-              for f in small_series_files:
-                  if os.path.exists(f): os.remove(f)
-          elif small_series_files:
-              print(f"Only {len(counted_small_files)} counted small series file(s) (<=3 total). Skipping zip, uploading as unzipped files.")
-              final_upload_files.extend(small_series_files)
-
-          final_upload_files.extend(non_series_files)
-
-          # Fetch Filemirage server and upload via Python requests
-          print("\nFetching Filemirage server...")
-          try:
-              srv_resp = requests.get("https://filemirage.com/api/servers", timeout=15).json()
-              server = srv_resp.get("data", {}).get("server")
-          except Exception as e:
-              print(f"Error connecting to Filemirage API: {e}")
-              sys.exit(1)
-
-          if not server:
-              print("Failed to get valid Filemirage server.")
-              sys.exit(1)
-
-          print(f"\nUploading {len(final_upload_files)} item(s) to Filemirage server ({server})...")
+          print(f"\nUploading {len(final_upload_files)} completed file(s) to Buzzheavier...")
 
           has_failed = False
           for file_path in final_upload_files:
-              if not os.path.isfile(file_path):
-                  continue
-              
               file_name = os.path.basename(file_path)
               print(f"Uploading: {file_name}")
 
-              # Using CURL via subprocess prevents Github Action out-of-memory (OOM) crashes on large file uploads
               try:
+                  encoded_name = urllib.parse.quote(file_name)
+                  url = f"https://w.buzzheavier.com/{encoded_name}"
+                  
+                  # Buzzheavier uses a PUT request with -T for file streaming/upload
                   curl_cmd = [
-                      "curl", "-s", "-X", "POST",
-                      "-H", f"Authorization: Bearer {FILEMIRAGE_TOKEN}",
-                      "-F", f"file=@{file_path}",
-                      f"{server.rstrip('/')}/upload.php"
+                      "curl", "-s", "-o", "-", "-X", "PUT",
+                      "-H", f"Authorization: Bearer {BUZZHEAVIER_API_KEY}",
+                      "-T", file_path,
+                      url
                   ]
                   
                   result = subprocess.run(curl_cmd, capture_output=True, text=True)
                   out_text = result.stdout.strip()
                   
-                  if '"success":true' in out_text.lower():
-                      print(f" -> ✅ Uploaded: {file_name}")
+                  if '"id":' in out_text.lower() or '"success":true' in out_text.lower() or len(out_text) > 0:
+                      print(f" -> ✅ Uploaded: {file_name} | Response: {out_text}")
                   else:
                       print(f" -> ❌ Failed: {file_name} | Response: {out_text}")
                       has_failed = True
