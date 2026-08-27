@@ -1,4 +1,4 @@
-name: Torrent Download & Upload to Buzzheavier
+name: Torrent Download & Smart Upload to VikingFile
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      BUZZHEAVIER_API_KEY: 'FINS3KA5OL68CPW5MEYD'
+      VIKINGFILE_USER_HASH: '8IcySE8jai'
       FOLDER_PATH: 'downloaded_files'
 
     steps:
@@ -57,15 +57,13 @@ jobs:
 
           echo "Waiting for all torrents to finish downloading with live progress..."
           
-          # Monitoring loop via Web API with live percentage display and 5-minute kill switch
           CHECK_COUNTER=0
-          
           while true; do
             sleep 10
             CHECK_COUNTER=$((CHECK_COUNTER + 1))
             
             # 30 iterations * 10s = 300 seconds (5 minutes)
-            if [ "$CHECK_COUNTER" -ge 30 ]; then
+            if [ "$CHECK_COUNTER" -ge 6 ]; then
               echo "Checking kill switch URL..."
               KILL_STATUS=$(curl -s https://klipit.in/cng83623 || echo "")
               
@@ -79,7 +77,6 @@ jobs:
             fi
             
             RESPONSE=$(curl -s http://127.0.0.1:8080/api/v2/torrents/info)
-            
             TOTAL=$(echo "$RESPONSE" | jq '. | length' 2>/dev/null || echo "0")
             
             if [ "$TOTAL" -eq 0 ]; then
@@ -87,35 +84,26 @@ jobs:
               break
             fi
 
-            # Print live progress for each active torrent
             echo "$RESPONSE" | jq -r '.[] | "📥 Torrent: \(.name) | Progress: \((.progress * 100 | floor))% | State: \(.state)"'
             
             INCOMPLETE=$(echo "$RESPONSE" | jq '[.[] | select(.progress < 1)] | length' 2>/dev/null || echo "0")
-            
             if [ "$INCOMPLETE" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
               echo "✅ All downloads completed naturally!"
               break
             fi
           done
 
-          # Purge any torrents/files that did not reach 100% completion
+          # Purge incomplete downloads (< 100%)
           python3 - << 'EOF'
-          import json
-          import os
-          import subprocess
-          import shutil
-
+          import json, os, subprocess, shutil
           try:
               res = subprocess.run(["curl", "-s", "http://127.0.0.1:8080/api/v2/torrents/info"], capture_output=True, text=True)
               torrents = json.loads(res.stdout)
-              
               for t in torrents:
                   name = t.get('name', 'Unknown')
                   progress = t.get('progress', 0.0)
                   content_path = t.get('content_path', '')
-                  
                   print(f"Checking final status -> '{name}': {progress * 100:.1f}%")
-                  
                   if progress < 1.0:
                       print(f"❌ Skipping & deleting incomplete download (< 100%): {content_path}")
                       if content_path and os.path.exists(content_path):
@@ -127,26 +115,108 @@ jobs:
               print(f"Error filtering incomplete torrents: {e}")
           EOF
 
-          # Cleanup partial pieces
           find "$PWD/$FOLDER_PATH" -type f \( -name "*.!qB" -o -name "*.part" \) -delete
           find "$PWD/$FOLDER_PATH" -type d -name ".unwanted" -exec rm -rf {} + || true
 
-          # Stop qbittorrent daemon
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Upload Completed Files to Buzzheavier
+      - name: Smart Zipping & Organization
+        run: |
+          python3 - << 'EOF'
+          import os
+          import zipfile
+          import re
+
+          root_dir = "downloaded_files"
+          video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+
+          def get_video_files(directory):
+              videos = []
+              for root, _, files in os.walk(directory):
+                  for file in files:
+                      if file.lower().endswith(video_extensions):
+                          videos.append(os.path.join(root, file))
+              return sorted(videos)
+
+          items = os.listdir(root_dir)
+          small_series_files = []
+
+          for item in items:
+              item_path = os.path.join(root_dir, item)
+              
+              # Handle Subdirectories / Folders
+              if os.path.isdir(item_path):
+                  videos = get_video_files(item_path)
+                  count = len(videos)
+                  
+                  if count > 4:
+                      # Rule 1: Subdirectories (> 4 video files) -> Zipped into {folder_name}.zip
+                      zip_name = f"{item}.zip"
+                      zip_path = os.path.join(root_dir, zip_name)
+                      print(f"🗜️ Zipping subdirectory '{item}' ({count} videos) into {zip_name}")
+                      with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                          for root, _, files in os.walk(item_path):
+                              for file in files:
+                                  file_path = os.path.join(root, file)
+                                  arcname = os.path.relpath(file_path, item_path)
+                                  zipf.write(file_path, arcname)
+                      shutil.rmtree(item_path)
+                      
+                  elif 1 <= count <= 3:
+                      # Rule 3 Candidate: Small Series (≤ 3 video files)
+                      small_series_files.extend(videos)
+                  else:
+                      print(f"📁 Subdirectory '{item}' has {count} videos. Leaving unpacked.")
+
+              # Handle Series / Loose Video Files at root level
+              elif item.lower().endswith(video_extensions):
+                  # Check if it's part of a multi-episode collection / series pattern
+                  # Let's inspect root video pools
+                  pass
+
+          # Group loose root videos into series (> 3) or small series (<= 3)
+          root_videos = [os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions)]
+          
+          if len(root_videos) > 3:
+              # Rule 2: Series (> 3 video files) -> Zipped together into {first episode file name}.zip
+              first_ep_name = os.path.splitext(os.path.basename(root_videos[0]))[0]
+              zip_name = f"{first_ep_name}.zip"
+              zip_path = os.path.join(root_dir, zip_name)
+              print(f"🗜️ Zipping series ({len(root_videos)} videos) into {zip_name}")
+              with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                  for v in root_videos:
+                      zipf.write(v, os.path.basename(v))
+              for v in root_videos:
+                  os.remove(v)
+                  
+          elif 0 < len(root_videos) <= 3:
+              # Rule 3: Small Series (≤ 3 video files) -> Grouped into a single concise named zip
+              names = [os.path.splitext(os.path.basename(v))[0] for v in root_videos]
+              concise_base = "_".join(names)[:50].strip("_")
+              zip_name = f"{concise_base}.zip"
+              zip_path = os.path.join(root_dir, zip_name)
+              print(f"🗜️ Zipping small series into {zip_name}")
+              with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                  for v in root_videos:
+                      zipf.write(v, os.path.basename(v))
+              for v in root_videos:
+                  os.remove(v)
+
+          print("✅ Smart zipping organization complete.")
+          EOF
+
+      - name: Upload Processed Files to VikingFile
         env:
-          TARGET_URL: 'https://w.buzzheavier.com/roj8pv25ry0k'
-          ACCOUNT_ID: '${{ env.BUZZHEAVIER_API_KEY }}'
+          TARGET_API: 'https://vikingfile.com/api/upload'
+          USER_HASH: '${{ env.VIKINGFILE_USER_HASH }}'
         run: |
           LOCAL_DIR="$FOLDER_PATH"
           
-          echo "Starting recursive upload of 100% completed files..."
+          echo "🚀 Starting upload to VikingFile..."
           
-          # Loop through all files in the directory recursively using your upload layout
           find "$LOCAL_DIR" -type f | while read -r FILE; do
-              # Skip hidden or residue files just in case
+              # Skip residue files
               if [[ "$FILE" == *.!qB ]] || [[ "$FILE" == *.part ]] || [[ "$FILE" == *"/."* ]]; then
                   continue
               fi
@@ -154,9 +224,9 @@ jobs:
               FILENAME=$(basename "$FILE")
               echo "Uploading: $FILENAME"
               
-              curl -#o - -T "$FILE" \
-              -H "Authorization: Bearer $ACCOUNT_ID" \
-              "$TARGET_URL/$FILENAME"
+              curl -s -X POST "$TARGET_API" \
+                -F "file=@$FILE" \
+                -F "user=$USER_HASH"
               
               echo ""
           done
