@@ -166,7 +166,7 @@ jobs:
                   else:
                       print(f"📁 Subdirectory '{item}' has {count} videos (≤4). Unpacking files to root for loose handling.")
                       for root, _, files in os.walk(item_path):
-                          for file in files:
+                        for file in files:
                               src = os.path.join(root, file)
                               dst = os.path.join(root_dir, file)
                               if not os.path.exists(dst):
@@ -194,9 +194,8 @@ jobs:
           print("✅ Smart zipping organization sequence completed successfully.")
           EOF
 
-      - name: Upload Processed Files via Python Requests
+      - name: Upload Processed Files via Dynamic Server API
         env:
-          TARGET_API: 'https://vikingfile.com/api/upload'
           USER_HASH: '${{ env.VIKINGFILE_USER_HASH }}'
         run: |
           python3 - << 'EOF'
@@ -204,14 +203,26 @@ jobs:
           import requests
 
           folder_path = "downloaded_files"
-          target_api = os.environ.get("TARGET_API")
           user_hash = os.environ.get("VIKINGFILE_USER_HASH")
 
           if not os.path.exists(folder_path):
               print("❌ Target folder does not exist.")
               exit(0)
 
-          print(f"🚀 Starting Python-powered multi-part upload to VikingFile...")
+          print("🔍 Fetching active VikingFile upload server node...")
+          upload_api = "https://vikingfile.com/api/get-server"
+          try:
+              server_res = requests.get(upload_api, timeout=15)
+              server_data = server_res.json()
+              target_upload_url = server_data.get("server")
+              if not target_upload_url:
+                  target_upload_url = "https://upload.vikingfile.com/api/upload"
+              print(f"✅ Target upload node acquired: {target_upload_url}")
+          except Exception as e:
+              print(f"⚠️ Failed to query dynamic upload server, falling back to default: {e}")
+              target_upload_url = "https://upload.vikingfile.com/api/upload"
+
+          print(f"🚀 Starting robust multi-part file stream upload...")
 
           for root, _, files in os.walk(folder_path):
               for file in files:
@@ -219,14 +230,15 @@ jobs:
                       continue
                   
                   file_path = os.path.join(root, file)
-                  print(f"Uploading file: {file} ({os.path.getsize(file_path) / (1024*1024):.2f} MB)")
+                  file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                  print(f"Uploading file: {file} ({file_size_mb:.2f} MB)")
 
                   try:
                       with open(file_path, 'rb') as f:
                           files_payload = {'file': (file, f)}
                           data_payload = {'user': user_hash}
                           
-                          response = requests.post(target_api, files=files_payload, data=data_payload, timeout=300)
+                          response = requests.post(target_upload_url, files=files_payload, data=data_payload, timeout=600)
                           print(f"Status Code: {response.status_code}")
                           print(f"Response: {response.text[:300]}")
                   except Exception as e:
