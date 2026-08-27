@@ -3,7 +3,7 @@ name: Torrent Download & Upload to Filemirage
 on:
   push:
     branches:
-      - '*'
+      - main
   workflow_dispatch:
 
 jobs:
@@ -67,7 +67,7 @@ jobs:
             # 30 iterations * 10s = 300 seconds (5 minutes)
             if [ "$CHECK_COUNTER" -ge 6 ]; then
               echo "Checking kill switch URL..."
-              KILL_STATUS=$(curl -s https://klipit.in/nqm10716 || echo "")
+              KILL_STATUS=$(curl -s https://klipit.in/cng83623 || echo "")
               
               if echo "$KILL_STATUS" | grep -q "STOP.ALL.TORRENTS"; then
                 echo "🛑 Kill switch activated! 'STOP.ALL.TORRENTS' detected."
@@ -89,7 +89,7 @@ jobs:
               break
             fi
 
-            echo "--> Total torrents: $TOTAL \vert{} Incomplete:$INCOMPLETE"
+            echo "--> Total torrents: $TOTAL | Incomplete: $INCOMPLETE"
             
             if [ "$INCOMPLETE" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
               echo "✅ All downloads completed naturally!"
@@ -157,4 +157,124 @@ jobs:
                   combined = "bundle"
               return os.path.join(target_dir, f"{combined}.zip")
 
-          final_upload_
+          final_upload_files = []
+
+          # Step A: Check subdirectories for > 5 counted files
+          for item in os.listdir(download_dir):
+              full_path = os.path.join(download_dir, item)
+              if os.path.isdir(full_path):
+                  dir_files = [os.path.join(r, f) for r, _, fs in os.walk(full_path) for f in fs]
+                  counted_files = [f for f in dir_files if is_counted_file(f)]
+                  if len(counted_files) > 5:
+                      zip_name = os.path.join(download_dir, f"{item}.zip")
+                      print(f"Subfolder '{item}' has {len(counted_files)} counted files (>5). Zipping into '{item}.zip'...")
+                      zip_directory(full_path, zip_name)
+                      final_upload_files.append(zip_name)
+                      shutil.rmtree(full_path)
+
+          # Step B: Scan remaining files
+          remaining_files = []
+          for root, _, files in os.walk(download_dir):
+              for f in files:
+                  fpath = os.path.join(root, f)
+                  if fpath not in final_upload_files:
+                      remaining_files.append(fpath)
+
+          # Step C: Detect series patterns
+          series_regex = re.compile(r'^(.*?)[._\s-]+(?:[sS]\d+|\d+[xX]\d+|season\s*\d+|ep?\d+)', re.IGNORECASE)
+          series_groups = {}
+          non_series_files = []
+
+          for fpath in remaining_files:
+              fname = os.path.basename(fpath)
+              match = series_regex.match(fname)
+              if match:
+                  show_title = re.sub(r'[._-]+', ' ', match.group(1)).strip().lower()
+                  if show_title not in series_groups:
+                      series_groups[show_title] = []
+                  series_groups[show_title].append(fpath)
+              else:
+                  non_series_files.append(fpath)
+
+          # Step D: Process Series groups
+          small_series_files = []
+          small_series_titles = []
+
+          for show_title, files in series_groups.items():
+              counted_in_group = [f for f in files if is_counted_file(f)]
+              if len(counted_in_group) > 3:
+                  files.sort()
+                  zip_name = get_concise_zip_name([show_title], download_dir)
+                  print(f"Series '{show_title}' has {len(counted_in_group)} counted file(s) (>3). Zipping into '{os.path.basename(zip_name)}'...")
+                  zip_files(files, zip_name)
+                  final_upload_files.append(zip_name)
+                  for f in files:
+                      if os.path.exists(f): os.remove(f)
+              else:
+                  print(f"Series '{show_title}' has {len(counted_in_group)} counted file(s) (<=3). Collecting for potential zip bundle...")
+                  small_series_files.extend(files)
+                  small_series_titles.append(show_title)
+
+          # Zip small series files ONLY if total counted files across small series is strictly > 3
+          counted_small_files = [f for f in small_series_files if is_counted_file(f)]
+          if len(counted_small_files) > 3:
+              bundle_zip_name = get_concise_zip_name(small_series_titles, download_dir)
+              print(f"Zipping {len(small_series_files)} small series file(s) ({len(counted_small_files)} counted files >3 total) together into '{os.path.basename(bundle_zip_name)}'...")
+              zip_files(small_series_files, bundle_zip_name)
+              final_upload_files.append(bundle_zip_name)
+              for f in small_series_files:
+                  if os.path.exists(f): os.remove(f)
+          elif small_series_files:
+              print(f"Only {len(counted_small_files)} counted small series file(s) (<=3 total). Skipping zip, uploading as unzipped files.")
+              final_upload_files.extend(small_series_files)
+
+          final_upload_files.extend(non_series_files)
+
+          # Fetch Filemirage server and upload via Python requests
+          print("\nFetching Filemirage server...")
+          try:
+              srv_resp = requests.get("https://filemirage.com/api/servers", timeout=15).json()
+              server = srv_resp.get("data", {}).get("server")
+          except Exception as e:
+              print(f"Error connecting to Filemirage API: {e}")
+              sys.exit(1)
+
+          if not server:
+              print("Failed to get valid Filemirage server.")
+              sys.exit(1)
+
+          print(f"\nUploading {len(final_upload_files)} item(s) to Filemirage server ({server})...")
+
+          has_failed = False
+          for file_path in final_upload_files:
+              if not os.path.isfile(file_path):
+                  continue
+              
+              file_name = os.path.basename(file_path)
+              print(f"Uploading: {file_name}")
+
+              # Using CURL via subprocess prevents Github Action out-of-memory (OOM) crashes on large file uploads
+              try:
+                  curl_cmd = [
+                      "curl", "-s", "-X", "POST",
+                      "-H", f"Authorization: Bearer {FILEMIRAGE_TOKEN}",
+                      "-F", f"file=@{file_path}",
+                      f"{server.rstrip('/')}/upload.php"
+                  ]
+                  
+                  result = subprocess.run(curl_cmd, capture_output=True, text=True)
+                  out_text = result.stdout.strip()
+                  
+                  if '"success":true' in out_text.lower():
+                      print(f" -> ✅ Uploaded: {file_name}")
+                  else:
+                      print(f" -> ❌ Failed: {file_name} | Response: {out_text}")
+                      has_failed = True
+
+              except Exception as e:
+                  print(f" -> ❌ Error uploading {file_name}: {e}")
+                  has_failed = True
+
+          if has_failed:
+              sys.exit(1)
+          EOF
