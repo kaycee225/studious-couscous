@@ -1,4 +1,4 @@
-Name: Torrent Download & Upload to Buzzheavier
+name: Torrent Download & Upload to Buzzheavier
 
 on:
   push:
