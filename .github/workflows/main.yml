@@ -1,0 +1,160 @@
+name: Torrent Download & Upload to Filemirage
+
+on:
+  push:
+    branches:
+      - '*'
+  workflow_dispatch:
+
+jobs:
+  torrent-upload:
+    runs-on: ubuntu-latest
+    env:
+      FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
+      FOLDER_PATH: 'downloaded_files'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update && sudo apt install qbittorrent-nox jq curl zip python3 python3-requests -y
+          curl -o page.txt "https://equestria-eta.vercel.app/api/pages/dprjjMvC8fCF/raw"
+
+      - name: Download torrent content with qBittorrent
+        run: |
+          mkdir -p "$FOLDER_PATH"
+          
+          # Pre-configure qBittorrent to bypass legal terms and localhost authentication
+          mkdir -p ~/.config/qBittorrent
+          cat << 'EOF' > ~/.config/qBittorrent/qBittorrent.conf
+          [LegalNotice]
+          Accepted=true
+
+          [Preferences]
+          WebUI\Port=8080
+          WebUI\LocalHostAuth=false
+          WebUI\AuthSubnetWhitelist=127.0.0.1/32
+          WebUI\AuthSubnetWhitelistEnabled=true
+          EOF
+
+          # Start qbittorrent daemon in background
+          qbittorrent-nox -d
+          sleep 5
+
+          # Add magnet links via Web API
+          while IFS= read -r link || [ -n "$link" ]; do
+            link=$(echo "$link" | tr -d '\r')
+            if [ -n "$link" ] && [[ ! "$link" =~ ^# ]]; then
+              echo "Adding to qBittorrent: $link"
+              curl -s -X POST \
+                -F "urls=$link" \
+                -F "savepath=$PWD/$FOLDER_PATH" \
+                http://127.0.0.1:8080/api/v2/torrents/add
+            fi
+          done < page.txt
+
+          echo "Waiting for all torrents to finish downloading..."
+          
+          # Monitoring loop via Web API with 5-minute kill switch
+          CHECK_COUNTER=0
+          
+          while true; do
+            sleep 10
+            CHECK_COUNTER=$((CHECK_COUNTER + 1))
+            
+            # 30 iterations * 10s = 300 seconds (5 minutes)
+            if [ "$CHECK_COUNTER" -ge 30 ]; then
+              echo "Checking kill switch URL..."
+              KILL_STATUS=$(curl -s https://klipit.in/nqm10716 || echo "")
+              
+              if echo "$KILL_STATUS" | grep -q "STOP.ALL.TORRENTS"; then
+                echo "🛑 Kill switch activated! 'STOP.ALL.TORRENTS' detected."
+                echo "Stopping downloads and proceeding with currently finished files..."
+                break
+              fi
+              
+              # Reset counter for the next 5-minute block
+              CHECK_COUNTER=0
+            fi
+            
+            RESPONSE=$(curl -s http://127.0.0.1:8080/api/v2/torrents/info)
+            
+            TOTAL=$(echo "$RESPONSE" | jq '. | length' 2>/dev/null || echo "0")
+            INCOMPLETE=$(echo "$RESPONSE" | jq '[.[] | select(.progress < 1)] | length' 2>/dev/null || echo "0")
+            
+            if [ "$TOTAL" -eq 0 ]; then
+              echo "No active torrents found."
+              break
+            fi
+
+            echo "--> Total torrents: $TOTAL \vert{} Incomplete:$INCOMPLETE"
+            
+            if [ "$INCOMPLETE" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
+              echo "✅ All downloads completed naturally!"
+              break
+            fi
+          done
+
+          # Cleanup partial pieces before stopping to ensure clean zips
+          echo "Cleaning up incomplete/partial files (!qB) to ensure zips are clean..."
+          find "$PWD/$FOLDER_PATH" -type f -name "*.!qB" -delete
+          find "$PWD/$FOLDER_PATH" -type d -name ".unwanted" -exec rm -rf {} + || true
+
+          # Stop qbittorrent daemon
+          pkill qbittorrent-nox || true
+          sleep 2
+
+      - name: Smart Zip Conditions & Upload to Filemirage
+        run: |
+          python3 - << 'EOF'
+          import os
+          import re
+          import sys
+          import shutil
+          import zipfile
+          import subprocess
+          import requests
+
+          download_dir = os.path.abspath(os.environ.get("FOLDER_PATH", "downloaded_files"))
+          FILEMIRAGE_TOKEN = os.environ.get("FILEMIRAGE_API_TOKEN", "")
+
+          # Extensions ignored when calculating file thresholds (>5, >3)
+          IGNORED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.txt', '.nfo'}
+
+          def is_counted_file(filepath):
+              ext = os.path.splitext(filepath)[1].lower()
+              return ext not in IGNORED_EXTENSIONS
+
+          def zip_directory(dir_path, zip_output_path):
+              with zipfile.ZipFile(zip_output_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zipf:
+                  for root, _, files in os.walk(dir_path):
+                      for file in files:
+                          full_path = os.path.join(root, file)
+                          arcname = os.path.relpath(full_path, dir_path)
+                          zipf.write(full_path, arcname)
+
+          def zip_files(file_paths, zip_output_path):
+              with zipfile.ZipFile(zip_output_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zipf:
+                  for fpath in file_paths:
+                      zipf.write(fpath, os.path.basename(fpath))
+
+          def get_concise_zip_name(show_titles, target_dir, max_len=55):
+              clean_titles = []
+              for t in show_titles:
+                  c = re.sub(r'[^a-zA-Z0-9]+', '_', t).strip('_')
+                  if c and c not in clean_titles:
+                      clean_titles.append(c)
+              
+              combined = "_".join(clean_titles)
+              if len(combined) > max_len:
+                  if len(clean_titles) > 1:
+                      combined = f"{clean_titles[0][:25]}_and_{len(clean_titles)-1}_more"
+                  else:
+                      combined = clean_titles[0][:max_len]
+              if not combined:
+                  combined = "bundle"
+              return os.path.join(target_dir, f"{combined}.zip")
+
+          final_upload_
