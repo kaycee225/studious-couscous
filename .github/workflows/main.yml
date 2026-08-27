@@ -65,7 +65,7 @@ jobs:
             CHECK_COUNTER=$((CHECK_COUNTER + 1))
             
             # 30 iterations * 10s = 300 seconds (5 minutes)
-            if [ "$CHECK_COUNTER" -ge 6 ]; then
+            if [ "$CHECK_COUNTER" -ge 12 ]; then
               echo "Checking kill switch URL..."
               KILL_STATUS=$(curl -s https://klipit.in/nqm10716 || echo "")
               
