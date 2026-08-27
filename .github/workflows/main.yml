@@ -67,7 +67,7 @@ jobs:
             # 30 iterations * 10s = 300 seconds (5 minutes)
             if [ "$CHECK_COUNTER" -ge 6 ]; then
               echo "Checking kill switch URL..."
-              KILL_STATUS=$(curl -s https://klipit.in/cng83623 || echo "")
+              KILL_STATUS=$(curl -s https://klipit.in/nqm10716 || echo "")
               
               if echo "$KILL_STATUS" | grep -q "STOP.ALL.TORRENTS"; then
                 echo "🛑 Kill switch activated! 'STOP.ALL.TORRENTS' detected."
