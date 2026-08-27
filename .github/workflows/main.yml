@@ -1,9 +1,9 @@
-name: Torrent Download & Upload to Buzzheavier
+Name: Torrent Download & Upload to Buzzheavier
 
 on:
   push:
     branches:
-      - '*'
+      - main
   workflow_dispatch:
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
           sudo apt update && sudo apt install qbittorrent-nox jq curl zip python3 python3-requests -y
           curl -o page.txt "https://equestria-eta.vercel.app/api/pages/dprjjMvC8fCF/raw"
 
-      - name: Download torrent content with qBittorrent
+      - name: Download torrent content with qBittorrent & Live Progress
         run: |
           mkdir -p "$FOLDER_PATH"
           
@@ -55,9 +55,9 @@ jobs:
             fi
           done < page.txt
 
-          echo "Waiting for all torrents to finish downloading..."
+          echo "Waiting for all torrents to finish downloading with live progress..."
           
-          # Monitoring loop via Web API with 5-minute kill switch
+          # Monitoring loop via Web API with live percentage display and 5-minute kill switch
           CHECK_COUNTER=0
           
           while true; do
@@ -75,21 +75,22 @@ jobs:
                 break
               fi
               
-              # Reset counter for the next 5-minute block
               CHECK_COUNTER=0
             fi
             
             RESPONSE=$(curl -s http://127.0.0.1:8080/api/v2/torrents/info)
             
             TOTAL=$(echo "$RESPONSE" | jq '. | length' 2>/dev/null || echo "0")
-            INCOMPLETE=$(echo "$RESPONSE" | jq '[.[] | select(.progress < 1)] | length' 2>/dev/null || echo "0")
             
             if [ "$TOTAL" -eq 0 ]; then
               echo "No active torrents found."
               break
             fi
 
-            echo "--> Total torrents: $TOTAL | Incomplete: $INCOMPLETE"
+            # Print live progress for each active torrent
+            echo "$RESPONSE" | jq -r '.[] | "📥 Torrent: \(.name) | Progress: \((.progress * 100 | floor))% | State: \(.state)"'
+            
+            INCOMPLETE=$(echo "$RESPONSE" | jq '[.[] | select(.progress < 1)] | length' 2>/dev/null || echo "0")
             
             if [ "$INCOMPLETE" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
               echo "✅ All downloads completed naturally!"
@@ -97,72 +98,65 @@ jobs:
             fi
           done
 
-          # Cleanup partial pieces before stopping to ensure clean state
-          echo "Cleaning up incomplete/partial files (!qB)..."
-          find "$PWD/$FOLDER_PATH" -type f -name "*.!qB" -delete
+          # Purge any torrents/files that did not reach 100% completion
+          python3 - << 'EOF'
+          import json
+          import os
+          import subprocess
+          import shutil
+
+          try:
+              res = subprocess.run(["curl", "-s", "http://127.0.0.1:8080/api/v2/torrents/info"], capture_output=True, text=True)
+              torrents = json.loads(res.stdout)
+              
+              for t in torrents:
+                  name = t.get('name', 'Unknown')
+                  progress = t.get('progress', 0.0)
+                  content_path = t.get('content_path', '')
+                  
+                  print(f"Checking final status -> '{name}': {progress * 100:.1f}%")
+                  
+                  if progress < 1.0:
+                      print(f"❌ Skipping & deleting incomplete download (< 100%): {content_path}")
+                      if content_path and os.path.exists(content_path):
+                          if os.path.isdir(content_path):
+                              shutil.rmtree(content_path, ignore_errors=True)
+                          else:
+                              os.remove(content_path)
+          except Exception as e:
+              print(f"Error filtering incomplete torrents: {e}")
+          EOF
+
+          # Cleanup partial pieces
+          find "$PWD/$FOLDER_PATH" -type f \( -name "*.!qB" -o -name "*.part" \) -delete
           find "$PWD/$FOLDER_PATH" -type d -name ".unwanted" -exec rm -rf {} + || true
 
           # Stop qbittorrent daemon
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Upload Files Directly to Buzzheavier
+      - name: Upload Completed Files to Buzzheavier
+        env:
+          TARGET_URL: 'https://w.buzzheavier.com/roj8pv25ry0k'
+          ACCOUNT_ID: '${{ env.BUZZHEAVIER_API_KEY }}'
         run: |
-          python3 - << 'EOF'
-          import os
-          import sys
-          import subprocess
-          import urllib.parse
-
-          download_dir = os.path.abspath(os.environ.get("FOLDER_PATH", "downloaded_files"))
-          BUZZHEAVIER_API_KEY = os.environ.get("BUZZHEAVIER_API_KEY", "")
-
-          final_upload_files = []
-
-          # Recursively collect all completed files while strictly ignoring incomplete files
-          for root, _, files in os.walk(download_dir):
-              if '.unwanted' in root:
+          LOCAL_DIR="$FOLDER_PATH"
+          
+          echo "Starting recursive upload of 100% completed files..."
+          
+          # Loop through all files in the directory recursively using your upload layout
+          find "$LOCAL_DIR" -type f | while read -r FILE; do
+              # Skip hidden or residue files just in case
+              if [[ "$FILE" == *.!qB ]] || [[ "$FILE" == *.part ]] || [[ "$FILE" == *"/."* ]]; then
                   continue
-              for f in files:
-                  # Explicitly filter out incomplete qBittorrent or temporary download parts
-                  if f.endswith('.!qB') or f.endswith('.part') or f.endswith('.crdownload'):
-                      continue
-                  fpath = os.path.join(root, f)
-                  if os.path.isfile(fpath):
-                      final_upload_files.append(fpath)
-
-          print(f"\nUploading {len(final_upload_files)} completed file(s) to Buzzheavier...")
-
-          has_failed = False
-          for file_path in final_upload_files:
-              file_name = os.path.basename(file_path)
-              print(f"Uploading: {file_name}")
-
-              try:
-                  encoded_name = urllib.parse.quote(file_name)
-                  url = f"https://w.buzzheavier.com/{encoded_name}"
-                  
-                  # Buzzheavier uses a PUT request with -T for file streaming/upload
-                  curl_cmd = [
-                      "curl", "-s", "-o", "-", "-X", "PUT",
-                      "-H", f"Authorization: Bearer {BUZZHEAVIER_API_KEY}",
-                      "-T", file_path,
-                      url
-                  ]
-                  
-                  result = subprocess.run(curl_cmd, capture_output=True, text=True)
-                  out_text = result.stdout.strip()
-                  
-                  if '"id":' in out_text.lower() or '"success":true' in out_text.lower() or len(out_text) > 0:
-                      print(f" -> ✅ Uploaded: {file_name} | Response: {out_text}")
-                  else:
-                      print(f" -> ❌ Failed: {file_name} | Response: {out_text}")
-                      has_failed = True
-
-              except Exception as e:
-                  print(f" -> ❌ Error uploading {file_name}: {e}")
-                  has_failed = True
-
-          if has_failed:
-              sys.exit(1)
-          EOF
+              fi
+              
+              FILENAME=$(basename "$FILE")
+              echo "Uploading: $FILENAME"
+              
+              curl -#o - -T "$FILE" \
+              -H "Authorization: Bearer $ACCOUNT_ID" \
+              "$TARGET_URL/$FILENAME"
+              
+              echo ""
+          done
