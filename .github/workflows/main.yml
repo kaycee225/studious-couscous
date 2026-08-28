@@ -19,7 +19,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt update && sudo apt install qbittorrent-nox jq curl zip python3 python3-requests -y
+          sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests -y
           curl -o page.txt "https://equestria-eta.vercel.app/api/pages/dprjjMvC8fCF/raw"
 
       - name: Download torrent content with qBittorrent & Live Progress
@@ -121,11 +121,10 @@ jobs:
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Smart Zipping, Splitting (>6GB), & Organization (Fast Store Mode)
+      - name: Smart Native Zipping & Splitting (7-Zip Store Mode)
         run: |
           python3 - << 'EOF'
           import os
-          import zipfile
           import shutil
           import subprocess
 
@@ -134,25 +133,21 @@ jobs:
               os.makedirs(root_dir)
 
           video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-          MAX_SIZE_BYTES = 6 * 1024 * 1024 * 1024  # 6 GB strict threshold
+          MAX_SIZE_BYTES = 5900 * 1024 * 1024  # 5.9 GB to safely stay under the 6GB limit
 
-          def split_large_file(file_path):
-              if os.path.getsize(file_path) > MAX_SIZE_BYTES:
-                  print(f"📦 File '{os.path.basename(file_path)}' exceeds 6GB. Splitting into 6000M chunks...")
-                  # Use Linux split command: -b 6000M creates parts like file.zip.00, file.zip.01
-                  subprocess.run(["split", "-b", "6000M", "-d", file_path, f"{file_path}."], check=True)
-                  os.remove(file_path)
-                  print(f"✂️ Successfully split and removed original oversized file.")
+          def get_dir_size(path):
+              return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(path) for f in fn if not os.path.islink(os.path.join(dp, f)))
 
           def get_video_files(directory):
               videos = []
-              for root, _, files in os.walk(directory):
+              for root_path, _, files in os.walk(directory):
                   for file in files:
                       if file.lower().endswith(video_extensions):
-                          videos.append(os.path.join(root, file))
+                          videos.append(os.path.join(root_path, file))
               return sorted(videos)
 
           items = os.listdir(root_dir)
+          original_cwd = os.getcwd()
 
           # 1. Handle Subdirectories / Folders
           for item in items:
@@ -163,50 +158,66 @@ jobs:
                   
                   if count > 4:
                       zip_name = f"{item}.zip"
-                      zip_path = os.path.join(root_dir, zip_name)
-                      print(f"🗜️ Subdirectory '{item}' has {count} videos (>4). Fast zipping (no compression) into {zip_name}")
-                      # Changed ZIP_DEFLATED to ZIP_STORED for instant zipping
-                      with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zipf:
-                          for root, _, files in os.walk(item_path):
-                              for file in files:
-                                  file_path = os.path.join(root, file)
-                                  arcname = os.path.relpath(file_path, item_path)
-                                  zipf.write(file_path, arcname)
+                      folder_size = get_dir_size(item_path)
+                      
+                      os.chdir(item_path)
+                      if folder_size > MAX_SIZE_BYTES:
+                          print(f"📦 Subdirectory '{item}' exceeds 6GB. Creating NATIVE multi-volume split archive...")
+                          subprocess.run(["7z", "a", "-v5900m", "-mx0", f"../{zip_name}", "*"], check=True)
+                      else:
+                          print(f"🗜️ Subdirectory '{item}' has {count} videos. Zipping (Store Mode)...")
+                          subprocess.run(["7z", "a", "-mx0", f"../{zip_name}", "*"], check=True)
+                      
+                      os.chdir(original_cwd)
                       shutil.rmtree(item_path)
-                      split_large_file(zip_path) # Split the zip if > 6GB
                   else:
                       print(f"📁 Subdirectory '{item}' has {count} videos (≤4). Unpacking files to root for loose handling.")
-                      for root, _, files in os.walk(item_path):
-                        for file in files:
-                              src = os.path.join(root, file)
-                              dst = os.path.join(root_dir, file)
-                              if not os.path.exists(dst):
-                                  shutil.move(src, dst)
+                      for v in videos:
+                          dst = os.path.join(root_dir, os.path.basename(v))
+                          if not os.path.exists(dst):
+                              shutil.move(v, dst)
                       shutil.rmtree(item_path, ignore_errors=True)
 
-          # Collect remaining loose video files at root level (avoiding split chunks)
-          root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions) and not f.endswith(('.00', '.01', '.02', '.03', '.04', '.05', '.06'))])
+          # 2. Collect remaining loose video files at root level
+          root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions)])
           total_root_videos = len(root_videos)
 
           if total_root_videos > 3:
               first_ep_name = os.path.splitext(os.path.basename(root_videos[0]))[0]
               zip_name = f"{first_ep_name}.zip"
-              zip_path = os.path.join(root_dir, zip_name)
-              print(f"🗜️ Series detected ({total_root_videos} videos > 3). Fast zipping (no compression) into {zip_name}")
-              # Changed ZIP_DEFLATED to ZIP_STORED for instant zipping
-              with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zipf:
+              total_size = sum(os.path.getsize(v) for v in root_videos)
+              
+              list_file = os.path.join(root_dir, "vid_list.txt")
+              with open(list_file, "w") as f:
                   for v in root_videos:
-                      zipf.write(v, os.path.basename(v))
+                      f.write(f"{os.path.basename(v)}\n")
+              
+              os.chdir(root_dir)
+              if total_size > MAX_SIZE_BYTES:
+                  print(f"📦 Series detected ({total_root_videos} videos) exceeding 6GB. Creating NATIVE split archive...")
+                  subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, f"@vid_list.txt"], check=True)
+              else:
+                  print(f"🗜️ Series detected ({total_root_videos} videos). Zipping (Store Mode)...")
+                  subprocess.run(["7z", "a", "-mx0", zip_name, f"@vid_list.txt"], check=True)
+              
+              os.remove("vid_list.txt")
+              os.chdir(original_cwd)
+              
               for v in root_videos:
                   os.remove(v)
-              split_large_file(zip_path) # Split the zip if > 6GB
           else:
-              print(f"📂 Found {total_root_videos} video file(s) (≤3). Skipping zipping — evaluating individual file sizes.")
+              print(f"📂 Found {total_root_videos} video file(s) (≤3). Skipping grouping. Checking individual file sizes...")
               for v in root_videos:
                   if os.path.getsize(v) > MAX_SIZE_BYTES:
-                      split_large_file(v) # Split individual loose file if > 6GB
+                      print(f"📦 Individual file '{os.path.basename(v)}' exceeds 6GB. Splitting into native archive...")
+                      zip_name = f"{os.path.splitext(os.path.basename(v))[0]}.zip"
+                      
+                      os.chdir(root_dir)
+                      subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, os.path.basename(v)], check=True)
+                      os.remove(os.path.basename(v))
+                      os.chdir(original_cwd)
 
-          print("✅ Smart zipping and splitting sequence completed successfully.")
+          print("✅ Smart native zipping and splitting sequence completed successfully.")
           EOF
 
       - name: Upload files to Filemirage
@@ -235,7 +246,7 @@ jobs:
                 -F "file=@$FILE;filename=$FILENAME" \
                 "$SERVER/upload.php")
               
-              # Safe JSON parsing to prevent jq crashes if the server returns HTML (e.g. 502/413 limits)
+              # Safe JSON parsing to prevent jq crashes if the server returns HTML
               if echo "$RESPONSE" | jq -e . >/dev/null 2>&1; then
                   success=$(echo "$RESPONSE" | jq -r '.success')
                   if [ "$success" != "true" ]; then
