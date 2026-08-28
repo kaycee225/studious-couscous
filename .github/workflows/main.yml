@@ -63,7 +63,7 @@ jobs:
             CHECK_COUNTER=$((CHECK_COUNTER + 1))
             
             # 30 iterations * 10s = 300 seconds (5 minutes)
-            if [ "$CHECK_COUNTER" -ge 12 ]; then
+            if [ "$CHECK_COUNTER" -ge 6 ]; then
               echo "Checking kill switch URL..."
               KILL_STATUS=$(curl -s https://klipit.in/cng83623 || echo "")
               
@@ -121,7 +121,7 @@ jobs:
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Smart Zipping & Organization (No Splitting)
+      - name: Smart Zipping & Organization (Fast Store Mode)
         run: |
           python3 - << 'EOF'
           import os
@@ -154,8 +154,9 @@ jobs:
                   if count > 4:
                       zip_name = f"{item}.zip"
                       zip_path = os.path.join(root_dir, zip_name)
-                      print(f"🗜️ Subdirectory '{item}' has {count} videos (>4). Zipping into {zip_name}")
-                      with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                      print(f"🗜️ Subdirectory '{item}' has {count} videos (>4). Fast zipping (no compression) into {zip_name}")
+                      # Changed ZIP_DEFLATED to ZIP_STORED for instant zipping
+                      with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zipf:
                           for root, _, files in os.walk(item_path):
                               for file in files:
                                   file_path = os.path.join(root, file)
@@ -180,8 +181,9 @@ jobs:
               first_ep_name = os.path.splitext(os.path.basename(root_videos[0]))[0]
               zip_name = f"{first_ep_name}.zip"
               zip_path = os.path.join(root_dir, zip_name)
-              print(f"🗜️ Series detected ({total_root_videos} videos > 3). Zipping into {zip_name}")
-              with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+              print(f"🗜️ Series detected ({total_root_videos} videos > 3). Fast zipping (no compression) into {zip_name}")
+              # Changed ZIP_DEFLATED to ZIP_STORED for instant zipping
+              with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zipf:
                   for v in root_videos:
                       zipf.write(v, os.path.basename(v))
               for v in root_videos:
@@ -217,11 +219,17 @@ jobs:
                 -F "file=@$FILE;filename=$FILENAME" \
                 "$SERVER/upload.php")
               
-              success=$(echo "$RESPONSE" | jq -r '.success')
-              if [ "$success" != "true" ]; then
-                  echo "❌ Failed to upload $FILENAME: $(echo "$RESPONSE" | jq -r '.message')"
+              # Safe JSON parsing to prevent jq crashes if the server returns HTML (e.g. 502/413 limits)
+              if echo "$RESPONSE" | jq -e . >/dev/null 2>&1; then
+                  success=$(echo "$RESPONSE" | jq -r '.success')
+                  if [ "$success" != "true" ]; then
+                      echo "❌ Failed to upload $FILENAME: $(echo "$RESPONSE" | jq -r '.message')"
+                  else
+                      echo "✅ Successfully uploaded: $FILENAME"
+                  fi
               else
-                  echo "✅ Successfully uploaded: $FILENAME"
+                  echo "❌ Server returned an invalid response (not JSON)."
+                  echo "Raw Server Response:"
+                  echo "$RESPONSE"
               fi
           done
-
