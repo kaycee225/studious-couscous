@@ -1,4 +1,4 @@
-name: Torrent Download & Smart Upload to Pixeldrain
+Name: Torrent Download & Smart Upload to Pixeldrain
 
 on:
   push:
@@ -121,18 +121,28 @@ jobs:
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Smart Zipping & Organization (No Splitting)
+      - name: Smart Zipping, Splitting (>5GB), & Organization
         run: |
           python3 - << 'EOF'
           import os
           import zipfile
           import shutil
+          import subprocess
 
           root_dir = "downloaded_files"
           if not os.path.exists(root_dir):
               os.makedirs(root_dir)
 
           video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+          MAX_SIZE_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB strict threshold
+
+          def split_large_file(file_path):
+              if os.path.getsize(file_path) > MAX_SIZE_BYTES:
+                  print(f"📦 File '{os.path.basename(file_path)}' exceeds 5GB. Splitting into 5000M chunks...")
+                  # Use Linux split command: -b 5000M creates parts like file.zip.00, file.zip.01
+                  subprocess.run(["split", "-b", "5000M", "-d", file_path, f"{file_path}."], check=True)
+                  os.remove(file_path)
+                  print(f"✂️ Successfully split and removed original oversized file.")
 
           def get_video_files(directory):
               videos = []
@@ -162,6 +172,7 @@ jobs:
                                   arcname = os.path.relpath(file_path, item_path)
                                   zipf.write(file_path, arcname)
                       shutil.rmtree(item_path)
+                      split_large_file(zip_path)
                   else:
                       print(f"📁 Subdirectory '{item}' has {count} videos (≤4). Unpacking files to root for loose handling.")
                       for root, _, files in os.walk(item_path):
@@ -172,8 +183,8 @@ jobs:
                                   shutil.move(src, dst)
                       shutil.rmtree(item_path, ignore_errors=True)
 
-          # Collect remaining loose video files at root level
-          root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions)])
+          # Collect remaining loose video files at root level (avoiding split chunks)
+          root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions) and not f.endswith(('.00', '.01', '.02', '.03', '.04'))])
           total_root_videos = len(root_videos)
 
           if total_root_videos > 3:
@@ -186,10 +197,14 @@ jobs:
                       zipf.write(v, os.path.basename(v))
               for v in root_videos:
                   os.remove(v)
+              split_large_file(zip_path)
           else:
-              print(f"📂 Found {total_root_videos} video file(s) (≤3). Skipping zipping.")
+              print(f"📂 Found {total_root_videos} video file(s) (≤3). Skipping zipping — evaluating individual file sizes.")
+              for v in root_videos:
+                  if os.path.getsize(v) > MAX_SIZE_BYTES:
+                      split_large_file(v)
 
-          print("✅ Smart zipping organization sequence completed successfully.")
+          print("✅ Smart zipping and splitting sequence completed successfully.")
           EOF
 
       - name: Upload Processed Files to Pixeldrain
