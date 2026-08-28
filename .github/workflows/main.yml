@@ -1,4 +1,4 @@
-name: Torrent Download & Smart Upload to VikingFile
+Name: Torrent Download & Smart Upload to VikingFile
 
 on:
   push:
@@ -121,7 +121,7 @@ jobs:
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Smart Zipping, Splitting (>8GB), & Organization
+      - name: Smart Zipping, Splitting (>5GB), & Organization
         run: |
           python3 - << 'EOF'
           import os
@@ -134,13 +134,13 @@ jobs:
               os.makedirs(root_dir)
 
           video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-          MAX_SIZE_BYTES = 7.5 * 1024 * 1024 * 1024  # 7.5 GB threshold to safely stay under the 8GB limit
+          MAX_SIZE_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB strict threshold
 
           def split_large_file(file_path):
               if os.path.getsize(file_path) > MAX_SIZE_BYTES:
-                  print(f"📦 File '{os.path.basename(file_path)}' exceeds 7.5GB. Splitting into chunks...")
-                  # Use Linux split command: -b 7500M creates parts like file.zip.aa, file.zip.ab
-                  subprocess.run(["split", "-b", "7500M", "-d", file_path, f"{file_path}."], check=True)
+                  print(f"📦 File '{os.path.basename(file_path)}' exceeds 5GB. Splitting into 5000M chunks...")
+                  # Use Linux split command: -b 5000M creates parts like file.zip.aa, file.zip.ab
+                  subprocess.run(["split", "-b", "5000M", "-d", file_path, f"{file_path}."], check=True)
                   os.remove(file_path)
                   print(f"✂️ Successfully split and removed original oversized file.")
 
@@ -184,7 +184,7 @@ jobs:
                       shutil.rmtree(item_path, ignore_errors=True)
 
           # Collect remaining loose video files at root level
-          root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions) and not f.endswith(('.aa', '.ab', '.ac', '.ad'))])
+          root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions) and not f.endswith(('.aa', '.ab', '.ac', '.ad', '.ae'))])
           total_root_videos = len(root_videos)
 
           if total_root_videos > 3:
