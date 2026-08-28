@@ -20,11 +20,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests -y
-          curl -o page.txt "https://pink-script-snap.lovable.app/api/public/page/ce6c23ca-89a3-4ce6-afdd-1f13ea0655a5.txt"
 
-      - name: Download torrent content with qBittorrent & Live Progress
+      - name: Download torrent content with qBittorrent & Dynamic Link Sync
         run: |
           mkdir -p "$FOLDER_PATH"
+          touch added_links.txt
           
           # Pre-configure qBittorrent to bypass legal terms and localhost authentication
           mkdir -p ~/.config/qBittorrent
@@ -43,54 +43,54 @@ jobs:
           qbittorrent-nox -d
           sleep 5
 
-          # Add magnet links via Web API
-          while IFS= read -r link || [ -n "$link" ]; do
-            link=$(echo "$link" | tr -d '\r')
-            if [ -n "$link" ] && [[ ! "$link" =~ ^# ]]; then
-              echo "Adding to qBittorrent: $link"
-              curl -s -X POST \
-                -F "urls=$link" \
-                -F "savepath=$PWD/$FOLDER_PATH" \
-                http://127.0.0.1:8080/api/v2/torrents/add
-            fi
-          done < page.txt
+          echo "Starting download loop with live progress, 10s silent kill switch checks, and dynamic link fetching..."
 
-          echo "Waiting for all torrents to finish downloading with live progress..."
-          
-          CHECK_COUNTER=0
           while true; do
-            sleep 10
-            CHECK_COUNTER=$((CHECK_COUNTER + 1))
-            
-            # 30 iterations * 10s = 300 seconds (5 minutes)
-            if [ "$CHECK_COUNTER" -ge 6 ]; then
-              echo "Checking kill switch URL..."
-              KILL_STATUS=$(curl -s https://klipit.in/cng83623 || echo "")
-              
-              if echo "$KILL_STATUS" | grep -q "STOP.ALL.TORRENTS"; then
-                echo "🛑 Kill switch activated! 'STOP.ALL.TORRENTS' detected."
-                echo "Stopping downloads and proceeding with currently downloaded files..."
-                break
-              fi
-              
-              CHECK_COUNTER=0
+            # 1. Silent Kill Switch Check (Every 10 seconds)
+            KILL_STATUS=$(curl -s https://klipit.in/cng83623 || echo "")
+            if echo "$KILL_STATUS" | grep -q "STOP.ALL.TORRENTS"; then
+              echo "🛑 Kill switch activated! 'STOP.ALL.TORRENTS' detected."
+              echo "Stopping downloads and proceeding with currently downloaded files..."
+              break
             fi
-            
+
+            # 2. Dynamic Remote Link Fetch & Add (Every 10 seconds)
+            curl -s -o page.txt "https://pink-script-snap.lovable.app/api/public/page/ce6c23ca-89a3-4ce6-afdd-1f13ea0655a5.txt" || true
+
+            if [ -f page.txt ]; then
+              while IFS= read -r link || [ -n "$link" ]; do
+                link=$(echo "$link" | tr -d '\r')
+                if [ -n "$link" ] && [[ ! "$link" =~ ^# ]]; then
+                  # Check if link was already submitted to qBittorrent
+                  if ! grep -qxF "$link" added_links.txt 2>/dev/null; then
+                    echo "📥 New magnet link detected! Adding: $link"
+                    curl -s -X POST \
+                      -F "urls=$link" \
+                      -F "savepath=$PWD/$FOLDER_PATH" \
+                      http://127.0.0.1:8080/api/v2/torrents/add
+                    echo "$link" >> added_links.txt
+                  fi
+                fi
+              done < page.txt
+            fi
+
+            # 3. Fetch Torrent Status & Report Progress
             RESPONSE=$(curl -s http://127.0.0.1:8080/api/v2/torrents/info)
             TOTAL=$(echo "$RESPONSE" | jq '. | length' 2>/dev/null || echo "0")
-            
-            if [ "$TOTAL" -eq 0 ]; then
-              echo "No active torrents found."
-              break
+
+            if [ "$TOTAL" -gt 0 ]; then
+              echo "$RESPONSE" | jq -r '.[] | "📥 Torrent: \(.name) | Progress: \((.progress * 100 | floor))% | State: \(.state)"'
+              
+              INCOMPLETE=$(echo "$RESPONSE" | jq '[.[] | select(.progress < 1)] | length' 2>/dev/null || echo "0")
+              if [ "$INCOMPLETE" -eq 0 ]; then
+                echo "✅ All active downloads completed naturally!"
+                break
+              fi
+            else
+              echo "Waiting for active torrents..."
             fi
 
-            echo "$RESPONSE" | jq -r '.[] | "📥 Torrent: \(.name) | Progress: \((.progress * 100 | floor))% | State: \(.state)"'
-            
-            INCOMPLETE=$(echo "$RESPONSE" | jq '[.[] | select(.progress < 1)] | length' 2>/dev/null || echo "0")
-            if [ "$INCOMPLETE" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
-              echo "✅ All downloads completed naturally!"
-              break
-            fi
+            sleep 10
           done
 
           # Purge incomplete downloads (< 100%)
@@ -133,7 +133,7 @@ jobs:
               os.makedirs(root_dir)
 
           video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-          MAX_SIZE_BYTES = 5900 * 1024 * 1024  # 5.9 GB to safely stay under the 6GB limit
+          MAX_SIZE_BYTES = 5900 * 1024 * 1024  # 5.9 GB limit
 
           def get_dir_size(path):
               return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(path) for f in fn if not os.path.islink(os.path.join(dp, f)))
@@ -160,7 +160,6 @@ jobs:
                       zip_name = f"{item}.zip"
                       folder_size = get_dir_size(item_path)
                       
-                      # Change into root_dir to retain the subdirectory structure in the zip
                       os.chdir(root_dir)
                       if folder_size > MAX_SIZE_BYTES:
                           print(f"📦 Subdirectory '{item}' exceeds 6GB. Creating NATIVE multi-volume split archive...")
@@ -225,16 +224,13 @@ jobs:
         env:
           FILEMIRAGE_TOKEN: '${{ env.FILEMIRAGE_API_TOKEN }}'
         run: |
-          # Set variables
           SERVER=$(curl -s https://filemirage.com/api/servers | jq -r '.data.server')
           UPLOAD_ID=$(curl -s https://filemirage.com/api/servers | jq -r '.data.upload_id')
           
           echo "Using server: $SERVER"
           echo "Upload ID: $UPLOAD_ID"
           
-          # Recursively find and upload files from our downloaded_files directory
           find "$FOLDER_PATH" -type f | sort | while read -r FILE; do
-              # Skip leftover incomplete torrent fragments just in case
               if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then
                   continue
               fi
@@ -247,7 +243,6 @@ jobs:
                 -F "file=@$FILE;filename=$FILENAME" \
                 "$SERVER/upload.php")
               
-              # Safe JSON parsing to prevent jq crashes if the server returns HTML
               if echo "$RESPONSE" | jq -e . >/dev/null 2>&1; then
                   success=$(echo "$RESPONSE" | jq -r '.success')
                   if [ "$success" != "true" ]; then
