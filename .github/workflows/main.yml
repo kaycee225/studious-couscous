@@ -21,6 +21,7 @@ jobs:
         run: |
           sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests -y
           curl -o page.txt "https://pink-script-snap.lovable.app/api/public/page/ce6c23ca-89a3-4ce6-afdd-1f13ea0655a5.txt"
+
       - name: Download torrent content with qBittorrent & Live Progress
         run: |
           mkdir -p "$FOLDER_PATH"
@@ -159,13 +160,14 @@ jobs:
                       zip_name = f"{item}.zip"
                       folder_size = get_dir_size(item_path)
                       
-                      os.chdir(item_path)
+                      # Change into root_dir to retain the subdirectory structure in the zip
+                      os.chdir(root_dir)
                       if folder_size > MAX_SIZE_BYTES:
                           print(f"📦 Subdirectory '{item}' exceeds 6GB. Creating NATIVE multi-volume split archive...")
-                          subprocess.run(["7z", "a", "-v5900m", "-mx0", f"../{zip_name}", "*"], check=True)
+                          subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, item], check=True)
                       else:
                           print(f"🗜️ Subdirectory '{item}' has {count} videos. Zipping (Store Mode)...")
-                          subprocess.run(["7z", "a", "-mx0", f"../{zip_name}", "*"], check=True)
+                          subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
                       
                       os.chdir(original_cwd)
                       shutil.rmtree(item_path)
