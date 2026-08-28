@@ -3,7 +3,7 @@ Name: Torrent Download & Smart Upload to Filemirage
 on:
   push:
     branches:
-      - main
+      - New
   workflow_dispatch:
 
 jobs:
