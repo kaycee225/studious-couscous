@@ -1,4 +1,4 @@
-name: Torrent Download & Smart Upload to VikingFile
+Name: Torrent Download & Smart Upload to Pixeldrain
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      VIKINGFILE_USER_HASH: '8IcySE8jai'
+      PIXELDRAIN_API_KEY: 'd5a25155-ac2d-4a93-96fa-1754677248c1' # Optional: Leave empty if uploading anonymously, or add your API key
       FOLDER_PATH: 'downloaded_files'
 
     steps:
@@ -121,28 +121,18 @@ jobs:
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Smart Zipping, Splitting (>5GB), & Organization
+      - name: Smart Zipping & Organization (No Splitting)
         run: |
           python3 - << 'EOF'
           import os
           import zipfile
           import shutil
-          import subprocess
 
           root_dir = "downloaded_files"
           if not os.path.exists(root_dir):
               os.makedirs(root_dir)
 
           video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-          MAX_SIZE_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB strict threshold
-
-          def split_large_file(file_path):
-              if os.path.getsize(file_path) > MAX_SIZE_BYTES:
-                  print(f"📦 File '{os.path.basename(file_path)}' exceeds 5GB. Splitting into 5000M chunks...")
-                  # Use Linux split command: -b 5000M creates parts like file.zip.aa, file.zip.ab
-                  subprocess.run(["split", "-b", "5000M", "-d", file_path, f"{file_path}."], check=True)
-                  os.remove(file_path)
-                  print(f"✂️ Successfully split and removed original oversized file.")
 
           def get_video_files(directory):
               videos = []
@@ -172,7 +162,6 @@ jobs:
                                   arcname = os.path.relpath(file_path, item_path)
                                   zipf.write(file_path, arcname)
                       shutil.rmtree(item_path)
-                      split_large_file(zip_path)
                   else:
                       print(f"📁 Subdirectory '{item}' has {count} videos (≤4). Unpacking files to root for loose handling.")
                       for root, _, files in os.walk(item_path):
@@ -184,7 +173,7 @@ jobs:
                       shutil.rmtree(item_path, ignore_errors=True)
 
           # Collect remaining loose video files at root level
-          root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions) and not f.endswith(('.aa', '.ab', '.ac', '.ad', '.ae'))])
+          root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions)])
           total_root_videos = len(root_videos)
 
           if total_root_videos > 3:
@@ -197,45 +186,33 @@ jobs:
                       zipf.write(v, os.path.basename(v))
               for v in root_videos:
                   os.remove(v)
-              split_large_file(zip_path)
           else:
-              print(f"📂 Found {total_root_videos} video file(s) (≤3). Skipping zipping — evaluating individual file sizes.")
-              for v in root_videos:
-                  if os.path.getsize(v) > MAX_SIZE_BYTES:
-                      split_large_file(v)
+              print(f"📂 Found {total_root_videos} video file(s) (≤3). Skipping zipping.")
 
-          print("✅ Smart zipping and splitting sequence completed successfully.")
+          print("✅ Smart zipping organization sequence completed successfully.")
           EOF
 
-      - name: Upload Processed Files via Dynamic Server API
+      - name: Upload Processed Files to Pixeldrain
         env:
-          USER_HASH: '${{ env.VIKINGFILE_USER_HASH }}'
+          PIXELDRAIN_API_KEY: '${{ env.PIXELDRAIN_API_KEY }}'
         run: |
           python3 - << 'EOF'
           import os
           import requests
+          from requests.auth import HTTPBasicAuth
 
           folder_path = "downloaded_files"
-          user_hash = os.environ.get("VIKINGFILE_USER_HASH")
+          api_key = os.environ.get("PIXELDRAIN_API_KEY", "").strip()
 
           if not os.path.exists(folder_path):
               print("❌ Target folder does not exist.")
               exit(0)
 
-          print("🔍 Fetching active VikingFile upload server node...")
-          upload_api = "https://vikingfile.com/api/get-server"
-          try:
-              server_res = requests.get(upload_api, timeout=15)
-              server_data = server_res.json()
-              target_upload_url = server_data.get("server")
-              if not target_upload_url:
-                  target_upload_url = "https://upload.vikingfile.com/api/upload"
-              print(f"✅ Target upload node acquired: {target_upload_url}")
-          except Exception as e:
-              print(f"⚠️ Failed to query dynamic upload server, falling back to default: {e}")
-              target_upload_url = "https://upload.vikingfile.com/api/upload"
+          pixeldrain_url = "https://pixeldrain.com/api/file/"
+          print("🚀 Starting upload process to Pixeldrain...")
 
-          print(f"🚀 Starting robust multi-part file stream upload...")
+          # Set up authentication if API key is provided (Pixeldrain uses HTTP Basic Auth with username 'api' and key as password)
+          auth = HTTPBasicAuth('api', api_key) if api_key else None
 
           for root, _, files in os.walk(folder_path):
               for file in sorted(files):
@@ -244,18 +221,21 @@ jobs:
                   
                   file_path = os.path.join(root, file)
                   file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-                  print(f"Uploading file part/file: {file} ({file_size_mb:.2f} MB)")
+                  print(f"Uploading file: {file} ({file_size_mb:.2f} MB)")
 
                   try:
                       with open(file_path, 'rb') as f:
-                          files_payload = {'file': (file, f)}
-                          data_payload = {'user': user_hash}
-                          
-                          response = requests.post(target_upload_url, files=files_payload, data=data_payload, timeout=600)
+                          # Pixeldrain accepts standard PUT requests or POST requests with multipart form data
+                          response = requests.put(
+                              f"{pixeldrain_url}{file}",
+                              data=f,
+                              auth=auth,
+                              timeout=1200
+                          )
                           print(f"Status Code: {response.status_code}")
-                          print(f"Response: {response.text[:300]}")
+                          print(f"Response: {response.text}")
                   except Exception as e:
                       print(f"❌ Failed to upload {file}: {e}")
 
-          print("✅ Upload batch procedure finished.")
+          print("✅ Pixeldrain upload batch procedure finished.")
           EOF
