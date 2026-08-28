@@ -1,4 +1,4 @@
-Name: Torrent Download & Smart Upload to VikingFile
+name: Torrent Download & Smart Upload to VikingFile
 
 on:
   push:
