@@ -20,8 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests -y
-          curl -o page.txt "https://equestria-eta.vercel.app/api/pages/dprjjMvC8fCF/raw"
-
+          curl -o page.txt "https://pink-script-snap.lovable.app/api/public/page/ce6c23ca-89a3-4ce6-afdd-1f13ea0655a5.txt"
       - name: Download torrent content with qBittorrent & Live Progress
         run: |
           mkdir -p "$FOLDER_PATH"
