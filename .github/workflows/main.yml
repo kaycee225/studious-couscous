@@ -71,6 +71,7 @@ jobs:
               # 4. Process Status & Specific Kill Switches
               all_done = True if handles else False
               active_handles = []
+              # Safe state mapping
               state_str = ['queued', 'checking', 'downloading metadata', 'downloading', 'finished', 'seeding', 'allocating', 'checking fastresume']
               
               for h in handles:
@@ -92,12 +93,19 @@ jobs:
                           
                   active_handles.append(h)
                   
-                  if s.progress < 1.0 and not s.is_seed:
+                  # Check if it reached 100%
+                  if s.progress >= 1.0:
+                      # If finished, pause it so it doesn't seed endlessly in the background
+                      h.pause()
+                  else:
+                      # If even one torrent is under 100%, we are not done yet
                       all_done = False
                       
                   # Report Progress
                   if name != "Resolving Metadata...":
-                      print(f"📥 Torrent: {name} | Progress: {s.progress * 100:.1f}% | State: {state_str[s.state]}")
+                      # Use a safe state fetcher to avoid out-of-bounds errors on newer libtorrent versions
+                      current_state = state_str[int(s.state)] if int(s.state) < len(state_str) else str(s.state)
+                      print(f"📥 Torrent: {name} | Progress: {s.progress * 100:.1f}% | State: {current_state}")
                   else:
                       print("📥 Resolving magnet metadata...")
                       
@@ -122,7 +130,7 @@ jobs:
                           if os.path.isdir(target_path): shutil.rmtree(target_path)
                           else: os.remove(target_path)
           EOF
-
+                    
       - name: Smart Native Zipping & Splitting (7-Zip Store Mode)
         run: |
           # (Keep your existing zipping script intact here exactly as in V1)
