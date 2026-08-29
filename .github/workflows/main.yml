@@ -1,4 +1,4 @@
-Name: Torrent Download & Smart Upload to Filemirage
+name: Torrent Download & Smart Upload to Filemirage
 
 on:
   push:
