@@ -1,4 +1,4 @@
-name: Torrent Download & Smart Upload to Filemirage
+Name: Torrent Download & Smart Upload to Filemirage
 
 on:
   push:
@@ -47,7 +47,7 @@ jobs:
 
           while true; do
             # 1. Silent Kill Switch Check (Every 10 seconds)
-            KILL_STATUS=$(curl -s https://klipit.in/cng83623 || echo "")
+            KILL_STATUS=$(curl -s https://pink-script-snap.lovable.app/api/public/page/ce6c23ca-89a3-4ce6-afdd-1f13ea0655a5.txt || echo "")
             if echo "$KILL_STATUS" | grep -q "STOP.ALL.TORRENTS"; then
               echo "🛑 Kill switch activated! 'STOP.ALL.TORRENTS' detected."
               echo "Stopping downloads and proceeding with currently downloaded files..."
@@ -133,6 +133,9 @@ jobs:
               os.makedirs(root_dir)
 
           video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+          subtitle_extensions = ('.srt', '.ass', '.vtt', '.sub')
+          media_extensions = video_extensions + subtitle_extensions
+
           MAX_SIZE_BYTES = 5900 * 1024 * 1024  # 5.9 GB limit
 
           def get_dir_size(path):
@@ -145,6 +148,14 @@ jobs:
                       if file.lower().endswith(video_extensions):
                           videos.append(os.path.join(root_path, file))
               return sorted(videos)
+
+          def get_media_files(directory):
+              media = []
+              for root_path, _, files in os.walk(directory):
+                  for file in files:
+                      if file.lower().endswith(media_extensions):
+                          media.append(os.path.join(root_path, file))
+              return sorted(media)
 
           items = os.listdir(root_dir)
           original_cwd = os.getcwd()
@@ -171,40 +182,43 @@ jobs:
                       os.chdir(original_cwd)
                       shutil.rmtree(item_path)
                   else:
-                      print(f"📁 Subdirectory '{item}' has {count} videos (≤4). Unpacking files to root for loose handling.")
-                      for v in videos:
-                          dst = os.path.join(root_dir, os.path.basename(v))
+                      print(f"📁 Subdirectory '{item}' has {count} videos (≤4). Unpacking videos & subtitles to root for loose handling.")
+                      media_files = get_media_files(item_path)
+                      for m in media_files:
+                          dst = os.path.join(root_dir, os.path.basename(m))
                           if not os.path.exists(dst):
-                              shutil.move(v, dst)
+                              shutil.move(m, dst)
                       shutil.rmtree(item_path, ignore_errors=True)
 
-          # 2. Collect remaining loose video files at root level
+          # 2. Collect remaining loose video and subtitle files at root level
           root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions)])
           total_root_videos = len(root_videos)
 
           if total_root_videos > 3:
               first_ep_name = os.path.splitext(os.path.basename(root_videos[0]))[0]
               zip_name = f"{first_ep_name}.zip"
-              total_size = sum(os.path.getsize(v) for v in root_videos)
+              
+              root_media = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(media_extensions)])
+              total_size = sum(os.path.getsize(m) for m in root_media)
               
               list_file = os.path.join(root_dir, "vid_list.txt")
               with open(list_file, "w") as f:
-                  for v in root_videos:
-                      f.write(f"{os.path.basename(v)}\n")
+                  for m in root_media:
+                      f.write(f"{os.path.basename(m)}\n")
               
               os.chdir(root_dir)
               if total_size > MAX_SIZE_BYTES:
-                  print(f"📦 Series detected ({total_root_videos} videos) exceeding 6GB. Creating NATIVE split archive...")
-                  subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, f"@vid_list.txt"], check=True)
+                  print(f"📦 Series detected ({total_root_videos} videos + subtitles) exceeding 6GB. Creating NATIVE split archive...")
+                  subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, "@vid_list.txt"], check=True)
               else:
-                  print(f"🗜️ Series detected ({total_root_videos} videos). Zipping (Store Mode)...")
-                  subprocess.run(["7z", "a", "-mx0", zip_name, f"@vid_list.txt"], check=True)
+                  print(f"🗜️ Series detected ({total_root_videos} videos + subtitles). Zipping (Store Mode)...")
+                  subprocess.run(["7z", "a", "-mx0", zip_name, "@vid_list.txt"], check=True)
               
               os.remove("vid_list.txt")
               os.chdir(original_cwd)
               
-              for v in root_videos:
-                  os.remove(v)
+              for m in root_media:
+                  os.remove(m)
           else:
               print(f"📂 Found {total_root_videos} video file(s) (≤3). Skipping grouping. Checking individual file sizes...")
               for v in root_videos:
