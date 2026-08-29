@@ -3,7 +3,7 @@ name: Torrent Download & Smart Upload to Filemirage (Libtorrent)
 on:
   push:
     branches:
-      - Try
+      - Download-4-lib
   workflow_dispatch:
 
 jobs:
@@ -12,8 +12,8 @@ jobs:
     env:
       FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
       FOLDER_PATH: 'downloaded_files'
-      PAGE_URL: 'https://pink-script-snap.lovable.app/api/public/page/f3830315-e6aa-49a4-a650-79e3c89c75b7.txt'
-    
+      PAGE_URL: 'https://pink-script-snap.lovable.app/api/public/page/3f6bedae-a8af-4284-aa2e-dd7cf32f8e15.txt'
+      
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
