@@ -130,24 +130,153 @@ jobs:
                           if os.path.isdir(target_path): shutil.rmtree(target_path)
                           else: os.remove(target_path)
           EOF
-                    
+
       - name: Smart Native Zipping & Splitting (7-Zip Store Mode)
         run: |
-          # (Keep your existing zipping script intact here exactly as in V1)
           python3 - << 'EOF'
-          import os, shutil, subprocess
+          import os
+          import shutil
+          import subprocess
+
           root_dir = "downloaded_files"
-          # ... [Your exact 7-zip python script from the previous steps] ...
+          if not os.path.exists(root_dir):
+              os.makedirs(root_dir)
+
+          video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+          subtitle_extensions = ('.srt', '.ass', '.vtt', '.sub')
+          media_extensions = video_extensions + subtitle_extensions
+
+          MAX_SIZE_BYTES = 5900 * 1024 * 1024  # 5.9 GB limit
+
+          def get_dir_size(path):
+              return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(path) for f in fn if not os.path.islink(os.path.join(dp, f)))
+
+          def get_video_files(directory):
+              videos = []
+              for root_path, _, files in os.walk(directory):
+                  for file in files:
+                      if file.lower().endswith(video_extensions):
+                          videos.append(os.path.join(root_path, file))
+              return sorted(videos)
+
+          def get_media_files(directory):
+              media = []
+              for root_path, _, files in os.walk(directory):
+                  for file in files:
+                      if file.lower().endswith(media_extensions):
+                          media.append(os.path.join(root_path, file))
+              return sorted(media)
+
+          items = os.listdir(root_dir)
+          original_cwd = os.getcwd()
+
+          # 1. Handle Subdirectories / Folders
+          for item in items:
+              item_path = os.path.join(root_dir, item)
+              if os.path.isdir(item_path):
+                  videos = get_video_files(item_path)
+                  count = len(videos)
+                  
+                  if count > 4:
+                      zip_name = f"{item}.zip"
+                      folder_size = get_dir_size(item_path)
+                      
+                      os.chdir(root_dir)
+                      if folder_size > MAX_SIZE_BYTES:
+                          print(f"📦 Subdirectory '{item}' exceeds 6GB. Creating NATIVE multi-volume split archive...")
+                          subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, item], check=True)
+                      else:
+                          print(f"🗜️ Subdirectory '{item}' has {count} videos. Zipping (Store Mode)...")
+                          subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
+                      
+                      os.chdir(original_cwd)
+                      shutil.rmtree(item_path)
+                  else:
+                      print(f"📁 Subdirectory '{item}' has {count} videos (≤4). Unpacking videos & subtitles to root for loose handling.")
+                      media_files = get_media_files(item_path)
+                      for m in media_files:
+                          dst = os.path.join(root_dir, os.path.basename(m))
+                          if not os.path.exists(dst):
+                              shutil.move(m, dst)
+                      shutil.rmtree(item_path, ignore_errors=True)
+
+          # 2. Collect remaining loose video and subtitle files at root level
+          root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions)])
+          total_root_videos = len(root_videos)
+
+          if total_root_videos > 3:
+              first_ep_name = os.path.splitext(os.path.basename(root_videos[0]))[0]
+              zip_name = f"{first_ep_name}.zip"
+              
+              root_media = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(media_extensions)])
+              total_size = sum(os.path.getsize(m) for m in root_media)
+              
+              list_file = os.path.join(root_dir, "vid_list.txt")
+              with open(list_file, "w") as f:
+                  for m in root_media:
+                      f.write(f"{os.path.basename(m)}\n")
+              
+              os.chdir(root_dir)
+              if total_size > MAX_SIZE_BYTES:
+                  print(f"📦 Series detected ({total_root_videos} videos + subtitles) exceeding 6GB. Creating NATIVE split archive...")
+                  subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, "@vid_list.txt"], check=True)
+              else:
+                  print(f"🗜️ Series detected ({total_root_videos} videos + subtitles). Zipping (Store Mode)...")
+                  subprocess.run(["7z", "a", "-mx0", zip_name, "@vid_list.txt"], check=True)
+              
+              os.remove("vid_list.txt")
+              os.chdir(original_cwd)
+              
+              for m in root_media:
+                  os.remove(m)
+          else:
+              print(f"📂 Found {total_root_videos} video file(s) (≤3). Skipping grouping. Checking individual file sizes...")
+              for v in root_videos:
+                  if os.path.getsize(v) > MAX_SIZE_BYTES:
+                      print(f"📦 Individual file '{os.path.basename(v)}' exceeds 6GB. Splitting into native archive...")
+                      zip_name = f"{os.path.splitext(os.path.basename(v))[0]}.zip"
+                      
+                      os.chdir(root_dir)
+                      subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, os.path.basename(v)], check=True)
+                      os.remove(os.path.basename(v))
+                      os.chdir(original_cwd)
+
+          print("✅ Smart native zipping and splitting sequence completed successfully.")
           EOF
 
       - name: Upload files to Filemirage
         env:
           FILEMIRAGE_TOKEN: '${{ env.FILEMIRAGE_API_TOKEN }}'
         run: |
-          # (Keep your existing upload script intact here exactly as in V1)
           SERVER=$(curl -s https://filemirage.com/api/servers | jq -r '.data.server')
+          UPLOAD_ID=$(curl -s https://filemirage.com/api/servers | jq -r '.data.upload_id')
+          
+          echo "Using server: $SERVER"
+          echo "Upload ID: $UPLOAD_ID"
+          
           find "$FOLDER_PATH" -type f | sort | while read -r FILE; do
+              if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then
+                  continue
+              fi
+
               FILENAME=$(basename "$FILE")
-              echo "Uploading: $FILE"
-              curl -s -H "Authorization: Bearer $FILEMIRAGE_TOKEN" -F "file=@$FILE;filename=$FILENAME" "$SERVER/upload.php"
+              FILE_SIZE_MB=$(awk "BEGIN {printf \"%.2f\", $(stat -c%s "$FILE")/1024/1024}")
+              echo "Uploading: $FILE ($FILE_SIZE_MB MB)"
+              
+              RESPONSE=$(curl -s -H "Authorization: Bearer $FILEMIRAGE_TOKEN" \
+                -F "file=@$FILE;filename=$FILENAME" \
+                "$SERVER/upload.php")
+              
+              if echo "$RESPONSE" | jq -e . >/dev/null 2>&1; then
+                  success=$(echo "$RESPONSE" | jq -r '.success')
+                  if [ "$success" != "true" ]; then
+                      echo "❌ Failed to upload $FILENAME: $(echo "$RESPONSE" | jq -r '.message')"
+                  else
+                      echo "✅ Successfully uploaded: $FILENAME"
+                  fi
+              else
+                  echo "❌ Server returned an invalid response (not JSON)."
+                  echo "Raw Server Response:"
+                  echo "$RESPONSE"
+              fi
           done
