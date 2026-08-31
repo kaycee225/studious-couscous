@@ -1,16 +1,16 @@
-name: Torrent Download & Smart Upload to Filemirage
+name: Torrent Download & Smart Upload to Pixeldrain
 
 on:
   push:
     branches:
-      - New
+      - Pixelup
   workflow_dispatch:
 
 jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
+      PIXELDRAIN_API_KEY: '0bfe0b11-611d-4bb3-9b4c-36dbaa5a1fd5'
       FOLDER_PATH: 'downloaded_files'
 
     steps:
@@ -47,7 +47,7 @@ jobs:
 
           while true; do
             # 1. Silent Kill Switch Check (Every 10 seconds)
-            KILL_STATUS=$(curl -s https://pink-script-snap.lovable.app/api/public/page/ce6c23ca-89a3-4ce6-afdd-1f13ea0655a5.txt || echo "")
+            KILL_STATUS=$(curl -s https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/5ec77733-7e65-4d8f-b408-54eb01a369f6 || echo "")
             if echo "$KILL_STATUS" | grep -q "STOP.ALL.TORRENTS"; then
               echo "🛑 Kill switch activated! 'STOP.ALL.TORRENTS' detected."
               echo "Stopping downloads and proceeding with currently downloaded files..."
@@ -55,7 +55,7 @@ jobs:
             fi
 
             # 2. Dynamic Remote Link Fetch & Add (Every 10 seconds)
-            curl -s -o page.txt "https://pink-script-snap.lovable.app/api/public/page/ce6c23ca-89a3-4ce6-afdd-1f13ea0655a5.txt" || true
+            curl -s -o page.txt "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/5ec77733-7e65-4d8f-b408-54eb01a369f6" || true
 
             if [ -f page.txt ]; then
               while IFS= read -r link || [ -n "$link" ]; do
@@ -136,7 +136,7 @@ jobs:
           subtitle_extensions = ('.srt', '.ass', '.vtt', '.sub')
           media_extensions = video_extensions + subtitle_extensions
 
-          MAX_SIZE_BYTES = 5900 * 1024 * 1024  # 5.9 GB limit
+          MAX_SIZE_BYTES = 7000 * 1024 * 1024  # 7.0 GB limit (7000 MiB)
 
           def get_dir_size(path):
               return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(path) for f in fn if not os.path.islink(os.path.join(dp, f)))
@@ -173,8 +173,8 @@ jobs:
                       
                       os.chdir(root_dir)
                       if folder_size > MAX_SIZE_BYTES:
-                          print(f"📦 Subdirectory '{item}' exceeds 6GB. Creating NATIVE multi-volume split archive...")
-                          subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, item], check=True)
+                          print(f"📦 Subdirectory '{item}' exceeds 7GB. Creating NATIVE multi-volume split archive...")
+                          subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
                       else:
                           print(f"🗜️ Subdirectory '{item}' has {count} videos. Zipping (Store Mode)...")
                           subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
@@ -208,8 +208,8 @@ jobs:
               
               os.chdir(root_dir)
               if total_size > MAX_SIZE_BYTES:
-                  print(f"📦 Series detected ({total_root_videos} videos + subtitles) exceeding 6GB. Creating NATIVE split archive...")
-                  subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, "@vid_list.txt"], check=True)
+                  print(f"📦 Series detected ({total_root_videos} videos + subtitles) exceeding 7GB. Creating NATIVE split archive...")
+                  subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, "@vid_list.txt"], check=True)
               else:
                   print(f"🗜️ Series detected ({total_root_videos} videos + subtitles). Zipping (Store Mode)...")
                   subprocess.run(["7z", "a", "-mx0", zip_name, "@vid_list.txt"], check=True)
@@ -223,27 +223,21 @@ jobs:
               print(f"📂 Found {total_root_videos} video file(s) (≤3). Skipping grouping. Checking individual file sizes...")
               for v in root_videos:
                   if os.path.getsize(v) > MAX_SIZE_BYTES:
-                      print(f"📦 Individual file '{os.path.basename(v)}' exceeds 6GB. Splitting into native archive...")
+                      print(f"📦 Individual file '{os.path.basename(v)}' exceeds 7GB. Splitting into native archive...")
                       zip_name = f"{os.path.splitext(os.path.basename(v))[0]}.zip"
                       
                       os.chdir(root_dir)
-                      subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, os.path.basename(v)], check=True)
+                      subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, os.path.basename(v)], check=True)
                       os.remove(os.path.basename(v))
                       os.chdir(original_cwd)
 
           print("✅ Smart native zipping and splitting sequence completed successfully.")
           EOF
 
-      - name: Upload files to Filemirage
+      - name: Upload files to Pixeldrain
         env:
-          FILEMIRAGE_TOKEN: '${{ env.FILEMIRAGE_API_TOKEN }}'
+          PIXELDRAIN_API_KEY: '${{ env.PIXELDRAIN_API_KEY }}'
         run: |
-          SERVER=$(curl -s https://filemirage.com/api/servers | jq -r '.data.server')
-          UPLOAD_ID=$(curl -s https://filemirage.com/api/servers | jq -r '.data.upload_id')
-          
-          echo "Using server: $SERVER"
-          echo "Upload ID: $UPLOAD_ID"
-          
           find "$FOLDER_PATH" -type f | sort | while read -r FILE; do
               if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then
                   continue
@@ -253,16 +247,16 @@ jobs:
               FILE_SIZE_MB=$(awk "BEGIN {printf \"%.2f\", $(stat -c%s "$FILE")/1024/1024}")
               echo "Uploading: $FILE ($FILE_SIZE_MB MB)"
               
-              RESPONSE=$(curl -s -H "Authorization: Bearer $FILEMIRAGE_TOKEN" \
-                -F "file=@$FILE;filename=$FILENAME" \
-                "$SERVER/upload.php")
+              # Pixeldrain supports Basic Auth with an empty username and the API key as the password
+              RESPONSE=$(curl -s -u ":$PIXELDRAIN_API_KEY" -F "file=@$FILE" https://pixeldrain.com/api/file)
               
               if echo "$RESPONSE" | jq -e . >/dev/null 2>&1; then
                   success=$(echo "$RESPONSE" | jq -r '.success')
-                  if [ "$success" != "true" ]; then
-                      echo "❌ Failed to upload $FILENAME: $(echo "$RESPONSE" | jq -r '.message')"
+                  if [ "$success" == "true" ]; then
+                      FILE_ID=$(echo "$RESPONSE" | jq -r '.id')
+                      echo "✅ Successfully uploaded: $FILENAME -> https://pixeldrain.com/u/$FILE_ID"
                   else
-                      echo "✅ Successfully uploaded: $FILENAME"
+                      echo "❌ Failed to upload $FILENAME: $(echo "$RESPONSE" | jq -r '.value')"
                   fi
               else
                   echo "❌ Server returned an invalid response (not JSON)."
