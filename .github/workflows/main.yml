@@ -136,7 +136,7 @@ jobs:
           subtitle_extensions = ('.srt', '.ass', '.vtt', '.sub')
           media_extensions = video_extensions + subtitle_extensions
 
-          MAX_SIZE_BYTES = 5900 * 1024 * 1024  # 5.9 GB limit
+          MAX_SIZE_BYTES = 7000 * 1024 * 1024  # 5.9 GB limit
 
           def get_dir_size(path):
               return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(path) for f in fn if not os.path.islink(os.path.join(dp, f)))
@@ -167,7 +167,7 @@ jobs:
                   videos = get_video_files(item_path)
                   count = len(videos)
                   
-                  if count > 4:
+                  if count > 3:
                       zip_name = f"{item}.zip"
                       folder_size = get_dir_size(item_path)
                       
@@ -194,7 +194,7 @@ jobs:
           root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions)])
           total_root_videos = len(root_videos)
 
-          if total_root_videos > 3:
+          if total_root_videos > 2:
               first_ep_name = os.path.splitext(os.path.basename(root_videos[0]))[0]
               zip_name = f"{first_ep_name}.zip"
               
