@@ -10,9 +10,11 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
+      env:
       FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
       FOLDER_PATH: 'downloaded_files'
-
+      LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
+      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,10 +25,12 @@ jobs:
 
       - name: Download torrent content with qBittorrent & Dynamic Link Sync
         run: |
+          #!/usr/bin/env bash
+          set -e
           mkdir -p "$FOLDER_PATH"
           touch added_links.txt
           
-          # Pre-configure qBittorrent to bypass legal terms and localhost authentication
+          # Configure qBittorrent WebUI
           mkdir -p ~/.config/qBittorrent
           cat << 'EOF' > ~/.config/qBittorrent/qBittorrent.conf
           [LegalNotice]
@@ -39,87 +43,86 @@ jobs:
           WebUI\AuthSubnetWhitelistEnabled=true
           EOF
 
-          # Start qbittorrent daemon in background
           qbittorrent-nox -d
           sleep 5
 
-          echo "Starting download loop with live progress, 10s silent kill switch checks, and dynamic link fetching..."
+          echo "Starting download loop with live speed, ETA tracking, kill switch, and dynamic links..."
 
           while true; do
-            # 1. Silent Kill Switch Check (Every 10 seconds)
-            KILL_STATUS=$(curl -s https://pink-script-snap.lovable.app/api/public/page/ce6c23ca-89a3-4ce6-afdd-1f13ea0655a5.txt || echo "")
-            if echo "$KILL_STATUS" | grep -q "STOP.ALL.TORRENTS"; then
-              echo "🛑 Kill switch activated! 'STOP.ALL.TORRENTS' detected."
-              echo "Stopping downloads and proceeding with currently downloaded files..."
-              break
-            fi
-
-            # 2. Dynamic Remote Link Fetch & Add (Every 10 seconds)
-            curl -s -o page.txt "https://pink-script-snap.lovable.app/api/public/page/ce6c23ca-89a3-4ce6-afdd-1f13ea0655a5.txt" || true
-
-            if [ -f page.txt ]; then
-              while IFS= read -r link || [ -n "$link" ]; do
-                link=$(echo "$link" | tr -d '\r')
-                if [ -n "$link" ] && [[ ! "$link" =~ ^# ]]; then
-                  # Check if link was already submitted to qBittorrent
-                  if ! grep -qxF "$link" added_links.txt 2>/dev/null; then
-                    echo "📥 New magnet link detected! Adding: $link"
-                    curl -s -X POST \
-                      -F "urls=$link" \
-                      -F "savepath=$PWD/$FOLDER_PATH" \
-                      http://127.0.0.1:8080/api/v2/torrents/add
-                    echo "$link" >> added_links.txt
-                  fi
-                fi
-              done < page.txt
-            fi
-
-            # 3. Fetch Torrent Status & Report Progress
-            RESPONSE=$(curl -s http://127.0.0.1:8080/api/v2/torrents/info)
-            TOTAL=$(echo "$RESPONSE" | jq '. | length' 2>/dev/null || echo "0")
-
-            if [ "$TOTAL" -gt 0 ]; then
-              echo "$RESPONSE" | jq -r '.[] | "📥 Torrent: \(.name) | Progress: \((.progress * 100 | floor))% | State: \(.state)"'
-              
-              INCOMPLETE=$(echo "$RESPONSE" | jq '[.[] | select(.progress < 1)] | length' 2>/dev/null || echo "0")
-              if [ "$INCOMPLETE" -eq 0 ]; then
-                echo "✅ All active downloads completed naturally!"
+            # 1. Kill Switch
+            if [ -n "$KILL_SWITCH_URL" ]; then
+              KILL_STATUS=$(curl -s "$KILL_SWITCH_URL" || echo "")
+              if echo "$KILL_STATUS" | grep -q "STOP.ALL.TORRENTS"; then
+                echo "🛑 Kill switch activated! 'STOP.ALL.TORRENTS' detected."
                 break
               fi
-            else
-              echo "Waiting for active torrents..."
+
+              echo "$KILL_STATUS" | grep " NO$" > current_kill_list.txt || true
+              if [ -s current_kill_list.txt ]; then
+                python3 - << 'EOF'
+          import requests
+          try:
+              res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+              with open('current_kill_list.txt') as f:
+                  targets = [l.replace(' NO','').strip().lower() for l in f if l.strip()]
+              for t in res:
+                  if any(tg in t['name'].lower() for tg in targets if tg):
+                      print(f"🛑 Killing target: {t['name']}")
+                      requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={'hashes': t['hash'], 'deleteFiles': 'true'})
+          except Exception as e: print("Kill switch error:", e)
+          EOF
+              fi
             fi
 
+            # 2. Dynamic Remote Link Fetch
+            if [ -n "$LINK_FETCH_URL" ]; then
+              curl -s -o page.txt "$LINK_FETCH_URL" || true
+              if [ -f page.txt ]; then
+                while IFS= read -r link || [ -n "$link" ]; do
+                  link=$(echo "$link" | tr -d '\r')
+                  if [ -n "$link" ] && [[ ! "$link" =~ ^# ]]; then
+                    if ! grep -qxF "$link" added_links.txt 2>/dev/null; then
+                      echo "📥 Adding link: $link"
+                      curl -s -X POST -F "urls=$link" -F "savepath=$PWD/$FOLDER_PATH" http://127.0.0.1:8080/api/v2/torrents/add
+                      echo "$link" >> added_links.txt
+                    fi
+                  fi
+                done < page.txt
+              fi
+            fi
+
+            # 3. Status Report (Speed & ETA)
+            ALL_DONE=$(python3 - << 'EOF'
+          import requests
+
+          def fmt_eta(sec):
+              if sec is None or sec < 0 or sec >= 8640000: return "∞"
+              m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
+              return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
+
+          try:
+              res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+              if not res:
+                  print("WAITING")
+              else:
+                  incomplete = 0
+                  for t in res:
+                      prog = int(t.get('progress', 0) * 100)
+                      speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
+                      eta_str = fmt_eta(t.get('eta', -1))
+                      print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str} | State: {t['state']}")
+                      if prog < 100: incomplete += 1
+                  if incomplete == 0: print("ALL_COMPLETE")
+          except Exception as e: pass
+          EOF
+            )
+
+            echo "$ALL_DONE" | grep -v "ALL_COMPLETE" | grep -v "WAITING" || true
+            if echo "$ALL_DONE" | grep -q "ALL_COMPLETE"; then break; fi
             sleep 10
           done
 
-          # Purge incomplete downloads (< 100%)
-          python3 - << 'EOF'
-          import json, os, subprocess, shutil
-          try:
-              res = subprocess.run(["curl", "-s", "http://127.0.0.1:8080/api/v2/torrents/info"], capture_output=True, text=True)
-              torrents = json.loads(res.stdout)
-              for t in torrents:
-                  name = t.get('name', 'Unknown')
-                  progress = t.get('progress', 0.0)
-                  content_path = t.get('content_path', '')
-                  print(f"Checking final status -> '{name}': {progress * 100:.1f}%")
-                  if progress < 1.0:
-                      print(f"❌ Skipping & deleting incomplete download (< 100%): {content_path}")
-                      if content_path and os.path.exists(content_path):
-                          if os.path.isdir(content_path):
-                              shutil.rmtree(content_path, ignore_errors=True)
-                          else:
-                              os.remove(content_path)
-          except Exception as e:
-              print(f"Error filtering incomplete torrents: {e}")
-          EOF
-
-          find "$PWD/$FOLDER_PATH" -type f \( -name "*.!qB" -o -name "*.part" \) -delete
-          find "$PWD/$FOLDER_PATH" -type d -name ".unwanted" -exec rm -rf {} + || true
-
           pkill qbittorrent-nox || true
-          sleep 2
 
       - name: Smart Native Zipping & Splitting (7-Zip Store Mode)
         run: |
