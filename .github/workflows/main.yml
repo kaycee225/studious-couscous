@@ -22,7 +22,7 @@ jobs:
       - name: Download, Flatten & Upload
         run: |
           python3 - << 'EOF'
-          import libtorrent as lt, time, os, shutil, subprocess, requests
+          import libtorrent as lt, time, os, shutil, requests, urllib.parse
           from datetime import datetime
 
           pd_key = os.environ.get('PIXELDRAIN_API_KEY', '')
@@ -110,12 +110,27 @@ jobs:
                           shutil.move(src, dst)
                   shutil.rmtree(item_path, ignore_errors=True)
 
+          print("\n" + "="*50 + "\n🚀 Starting Pixeldrain Uploads...\n" + "="*50)
           for filename in sorted(os.listdir(folder_path)):
               file_path = os.path.join(folder_path, filename)
-              if os.path.isdir(file_path) or ".!qB" in filename or ".part" in filename: continue
-              cmd = ["curl", "-g", "-s", "-X", "PUT", "-T", file_path]
-              if pd_key: cmd.extend(["-u", f":{pd_key}"])
-              cmd.append(f"https://pixeldrain.com/api/file/{filename}")
-              subprocess.run(cmd)
-          EOF
+              if os.path.isdir(file_path) or ".!qB" in filename or ".part" in filename: 
+                  continue
+              
+              encoded_filename = urllib.parse.quote(filename)
+              url = f"https://pixeldrain.com/api/file/{encoded_filename}"
+              print(f"📤 Uploading: {filename}...")
 
+              try:
+                  with open(file_path, 'rb') as f:
+                      auth = ('', pd_key) if pd_key else None
+                      response = requests.put(url, data=f, auth=auth, timeout=600)
+                      
+                      if response.status_code in [200, 201]:
+                          res_data = response.json()
+                          file_id = res_data.get('id', 'unknown')
+                          print(f"✅ Success! {filename} -> https://pixeldrain.com/u/{file_id}")
+                      else:
+                          print(f"❌ Failed to upload '{filename}'. Status: {response.status_code} | Response: {response.text}")
+              except Exception as e:
+                  print(f"❌ Exception uploading '{filename}': {e}")
+          EOF
