@@ -1,35 +1,28 @@
-name: Torrent Download (qBittorrent - Max 10 Concurrent) & Filemirage
+name: qBittorrent & Filemirage
 
 on:
   push:
-    branches:
-      - New
+    branches: [New]
   workflow_dispatch:
 
 jobs:
-  torrent-upload:
+  run:
     runs-on: ubuntu-latest
     env:
       FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
       FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
-      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
+      LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/9c91e8a6-e112-4b0a-9afb-45ab37c314dd.txt'
+      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/9c91e8a6-e112-4b0a-9afb-45ab37c314dd.txt'
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - name: Install Dependencies
+        run: sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests -y
 
-      - name: Install dependencies
+      - name: Download with qBittorrent & Boxed Progress
         run: |
-          sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests -y
-
-      - name: Download torrent content with qBittorrent (Max 10 Concurrent) & Live Stats
-        run: |
-          #!/usr/bin/env bash
-          set -e
           mkdir -p "$FOLDER_PATH"
           touch added_links.txt
-          
           mkdir -p ~/.config/qBittorrent
           cat << 'EOF' > ~/.config/qBittorrent/qBittorrent.conf
           [LegalNotice]
@@ -47,161 +40,116 @@ jobs:
           qbittorrent-nox -d
           sleep 5
 
-          echo "Starting download loop with up to 10 concurrent downloads, live speed, ETA, and kill switch..."
+          python3 - << 'EOF'
+          import requests, time
+          from datetime import datetime
 
-          while true; do
-            if [ -n "$KILL_SWITCH_URL" ]; then
-              KILL_STATUS=$(curl -s "$KILL_SWITCH_URL" || echo "")
-              if echo "$KILL_STATUS" | grep -q "STOP.ALL.TORRENTS"; then
-                echo "🛑 Global kill switch activated!"
-                break
-              fi
+          link_url = 'https://pink-script-snap.lovable.app/api/public/page/9c91e8a6-e112-4b0a-9afb-45ab37c314dd.txt'
+          kill_url = 'https://pink-script-snap.lovable.app/api/public/page/9c91e8a6-e112-4b0a-9afb-45ab37c314dd.txt'
+          folder_path = 'downloaded_files'
+          added_links = set()
+          update_count = 0
 
-              echo "$KILL_STATUS" | grep " NO$" > current_kill_list.txt || true
-              if [ -s current_kill_list.txt ]; then
-                python3 - << 'EOF'
-          import requests
-          try:
-              res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
-              with open('current_kill_list.txt') as f:
-                  targets = [l.replace(' NO','').strip().lower() for l in f if l.strip()]
-              for t in res:
-                  if any(tg in t['name'].lower() for tg in targets if tg):
-                      print(f"🛑 Killing specific target: {t['name']}")
-                      requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={'hashes': t['hash'], 'deleteFiles': 'true'})
-          except Exception as e: print("Kill switch error:", e)
-          EOF
-              fi
-            fi
-
-            if [ -n "$LINK_FETCH_URL" ]; then
-              curl -s -o page.txt "$LINK_FETCH_URL" || true
-              if [ -f page.txt ]; then
-                while IFS= read -r link || [ -n "$link" ]; do
-                  link=$(echo "$link" | tr -d '\r')
-                  if [ -n "$link" ] && [[ ! "$link" =~ ^# ]]; then
-                    if ! grep -qxF "$link" added_links.txt 2>/dev/null; then
-                      echo "📥 Adding link: $link"
-                      curl -s -X POST -F "urls=$link" -F "savepath=$PWD/$FOLDER_PATH" http://127.0.0.1:8080/api/v2/torrents/add
-                      echo "$link" >> added_links.txt
-                    fi
-                  fi
-                done < page.txt
-              fi
-            fi
-
-            ALL_DONE=$(python3 - << 'EOF'
-          import requests
           def fmt_eta(sec):
               if sec is None or sec < 0 or sec >= 8640000: return "∞"
               m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
               return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
-          try:
-              res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
-              if not res: print("WAITING")
-              else:
-                  incomplete = 0
-                  for t in res:
-                      prog = int(t.get('progress', 0) * 100)
-                      speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
-                      eta_str = fmt_eta(t.get('eta', -1))
-                      print(f"📥 Torrent: {t['name']} | State: {t.get('state')} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
-                      if prog < 100: incomplete += 1
-                  if incomplete == 0: print("ALL_COMPLETE")
-          except Exception as e: pass
+
+          while True:
+              update_count += 1
+              timestamp = datetime.now().strftime("%H:%M:%S")
+
+              if kill_url:
+                  try:
+                      ks = requests.get(kill_url, timeout=5).text
+                      if "STOP.ALL.TORRENTS" in ks:
+                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Filemirage] Global kill switch activated! | {timestamp}\n" + "="*50)
+                          break
+                      targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
+                      if targets:
+                          res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+                          for t in res:
+                              if any(tg in t['name'].lower() for tg in targets if tg):
+                                  requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={'hashes': t['hash'], 'deleteFiles': 'true'})
+                  except Exception: pass
+
+              if link_url:
+                  try:
+                      page = requests.get(link_url, timeout=5).text
+                      for link in page.splitlines():
+                          link = link.strip()
+                          if link and not link.startswith('#') and link not in added_links:
+                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': f'/home/runner/work/../{folder_path}'})
+                              added_links.add(link)
+                  except Exception: pass
+
+              try:
+                  res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+                  print(f"\n" + "="*50)
+                  print(f"🔄 [GH-qBittorrent-Filemirage] Progress Update #{update_count} | {timestamp}")
+                  print("-"*50)
+                  if not res:
+                      print("📥 Waiting for active torrents...")
+                      all_done = False
+                  else:
+                      all_done = True
+                      for t in res:
+                          prog = int(t.get('progress', 0) * 100)
+                          speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
+                          eta_str = fmt_eta(t.get('eta', -1))
+                          print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
+                          if prog < 100: all_done = False
+                  print("="*50 + "\n")
+                  if all_done and res: break
+              except Exception: pass
+              time.sleep(10)
           EOF
-            )
 
-            echo "$ALL_DONE" | grep -v "ALL_COMPLETE" | grep -v "WAITING" || true
-            if echo "$ALL_DONE" | grep -q "ALL_COMPLETE"; then break; fi
-            sleep 10
-          done
-
-          find "$PWD/$FOLDER_PATH" -type f -name "*.!qB" -delete
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Smart Native Zipping & Splitting (7-Zip Store Mode)
+      - name: Smart Zipping & Splitting
         run: |
           python3 - << 'EOF'
           import os, shutil, subprocess
           root_dir = "downloaded_files"
-          if not os.path.exists(root_dir): os.makedirs(root_dir)
-          video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-          subtitle_extensions = ('.srt', '.ass', '.vtt', '.sub')
-          media_extensions = video_extensions + subtitle_extensions
-          MAX_SIZE_BYTES = 5900 * 1024 * 1024
+          video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+          sub_ext = ('.srt', '.ass', '.vtt', '.sub')
+          media_ext = video_ext + sub_ext
+          max_size_bytes = 7000 * 1024 * 1024
 
-          def get_dir_size(path):
-              return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(path) for f in fn if not os.path.islink(os.path.join(dp, f)))
-          def get_media_files(directory):
-              return sorted([os.path.join(r, f) for r, _, fs in os.walk(directory) for f in fs if f.lower().endswith(media_extensions)])
+          def get_dir_size(p):
+              return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
 
-          items = os.listdir(root_dir)
-          original_cwd = os.getcwd()
-          for item in items:
+          for item in os.listdir(root_dir):
               item_path = os.path.join(root_dir, item)
               if os.path.isdir(item_path):
-                  videos = [f for f in get_media_files(item_path) if f.lower().endswith(video_extensions)]
+                  videos = [f for f in os.listdir(item_path) if f.lower().endswith(video_ext)]
                   if len(videos) > 3:
                       zip_name = f"{item}.zip"
                       folder_size = get_dir_size(item_path)
+                      orig = os.getcwd()
                       os.chdir(root_dir)
-                      if folder_size > MAX_SIZE_BYTES:
-                          subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, item], check=True)
+                      if folder_size > max_size_bytes:
+                          subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
                       else:
                           subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
-                      os.chdir(original_cwd)
+                      os.chdir(orig)
                       shutil.rmtree(item_path)
                   else:
-                      for m in get_media_files(item_path):
-                          dst = os.path.join(root_dir, os.path.basename(m))
-                          if not os.path.exists(dst): shutil.move(m, dst)
+                      for r, _, files in os.walk(item_path):
+                          for f in files:
+                              if f.lower().endswith(media_ext):
+                                  dst = os.path.join(root_dir, f)
+                                  if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
                       shutil.rmtree(item_path, ignore_errors=True)
-
-          root_videos = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(video_extensions)])
-          if len(root_videos) > 2:
-              first_ep_name = os.path.splitext(os.path.basename(root_videos[0]))[0]
-              zip_name = f"{first_ep_name}.zip"
-              root_media = sorted([os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(media_extensions)])
-              total_size = sum(os.path.getsize(m) for m in root_media)
-              list_file = os.path.join(root_dir, "vid_list.txt")
-              with open(list_file, "w") as f:
-                  for m in root_media: f.write(f"{os.path.basename(m)}\n")
-              os.chdir(root_dir)
-              if total_size > MAX_SIZE_BYTES:
-                  subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, "@vid_list.txt"], check=True)
-              else:
-                  subprocess.run(["7z", "a", "-mx0", zip_name, "@vid_list.txt"], check=True)
-              os.remove("vid_list.txt")
-              os.chdir(original_cwd)
-              for m in root_media: os.remove(m)
-          else:
-              for v in root_videos:
-                  if os.path.getsize(v) > MAX_SIZE_BYTES:
-                      zip_name = f"{os.path.splitext(os.path.basename(v))[0]}.zip"
-                      os.chdir(root_dir)
-                      subprocess.run(["7z", "a", "-v5900m", "-mx0", zip_name, os.path.basename(v)], check=True)
-                      os.remove(os.path.basename(v))
-                      os.chdir(original_cwd)
           EOF
 
-      - name: Upload files to Filemirage
-        env:
-          FILEMIRAGE_TOKEN: '${{ env.FILEMIRAGE_API_TOKEN }}'
+      - name: Upload to Filemirage
         run: |
           SERVER=$(curl -s https://filemirage.com/api/servers | jq -r '.data.server')
-          echo "Using server: $SERVER"
           find "$FOLDER_PATH" -type f | sort | while read -r FILE; do
               if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then continue; fi
               FILENAME=$(basename "$FILE")
-              FILE_SIZE_MB=$(awk "BEGIN {printf \"%.2f\", $(stat -c%s "$FILE")/1024/1024}")
-              echo "Uploading: $FILE ($FILE_SIZE_MB MB)"
-              RESPONSE=$(curl -s -H "Authorization: Bearer $FILEMIRAGE_TOKEN" -F "file=@$FILE;filename=$FILENAME" "$SERVER/upload.php")
-              if echo "$RESPONSE" | jq -e . >/dev/null 2>&1; then
-                  success=$(echo "$RESPONSE" | jq -r '.success')
-                  if [ "$success" != "true" ]; then echo "❌ Failed: $FILENAME -> $(echo "$RESPONSE" | jq -r '.message')"; else echo "✅ Uploaded: $FILENAME"; fi
-              else
-                  echo "❌ Invalid JSON response: $RESPONSE"
-              fi
+              curl -s -H "Authorization: Bearer ${{ env.FILEMIRAGE_API_TOKEN }}" -F "file=@$FILE;filename=$FILENAME" "$SERVER/upload.php"
           done
