@@ -1,0 +1,121 @@
+name: Libtorrent & Pixeldrain
+
+on:
+  push:
+    branches: Newlibpix
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      PIXELDRAIN_API_KEY: 'd5a25155-ac2d-4a93-96fa-1754677248c1'
+      FOLDER_PATH: 'downloaded_files'
+      LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/001a5618-d879-406b-af7c-c29ea1628830'
+      KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/001a5618-d879-406b-af7c-c29ea1628830'
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Dependencies
+        run: sudo apt update && sudo apt install python3-libtorrent python3-requests curl -y
+
+      - name: Download, Flatten & Upload
+        run: |
+          python3 - << 'EOF'
+          import libtorrent as lt, time, os, shutil, subprocess, requests
+          from datetime import datetime
+
+          pd_key = os.environ.get('PIXELDRAIN_API_KEY', '')
+          folder_path = os.environ.get('FOLDER_PATH', 'downloaded_files')
+          link_url = os.environ.get('LINK_FETCH_URL')
+          kill_url = os.environ.get('KILL_SWITCH_URL')
+
+          os.makedirs(folder_path, exist_ok=True)
+          ses = lt.session({'listen_interfaces': '0.0.0.0:6881'})
+          added_links = set()
+          update_count = 0
+
+          def fmt_eta(sec):
+              if sec is None or sec < 0 or sec >= 8640000: return "∞"
+              m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
+              return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
+
+          while True:
+              update_count += 1
+              timestamp = datetime.now().strftime("%H:%M:%S")
+
+              if kill_url:
+                  try:
+                      r = requests.get(kill_url, timeout=5)
+                      if r.status_code == 200:
+                          if "STOP.ALL.TORRENTS" in r.text:
+                              print("\n" + "="*50 + f"\n🛑 [GH-Libtorrent-Pixeldrain] Global kill switch activated! | {timestamp}\n" + "="*50)
+                              break
+                          kill_targets = [l.replace(' NO', '').strip().lower() for l in r.text.splitlines() if l.endswith(' NO') and l.strip()]
+                          if kill_targets:
+                              for h in ses.get_torrents():
+                                  if h.status().has_metadata and any(kt in h.name().lower() for kt in kill_targets if kt):
+                                      ses.remove_torrent(h, 1)
+                  except Exception: pass
+
+              if link_url:
+                  try:
+                      r = requests.get(link_url, timeout=5)
+                      if r.status_code == 200:
+                          for line in r.text.splitlines():
+                              link = line.strip()
+                              if link and not link.startswith('#') and link not in added_links:
+                                  params = lt.parse_magnet_uri(link)
+                                  params.save_path = os.path.abspath(folder_path)
+                                  ses.add_torrent(params)
+                                  added_links.add(link)
+                  except Exception: pass
+
+              torrents = ses.get_torrents()
+              print(f"\n" + "="*50)
+              print(f"🔄 [GH-Libtorrent-Pixeldrain] Progress Update #{update_count} | {timestamp}")
+              print("-"*50)
+              if not torrents:
+                  print("📥 Waiting for active torrents...")
+                  all_done = False
+              else:
+                  all_done = True
+                  for h in torrents:
+                      s = h.status()
+                      prog = int(s.progress * 100)
+                      speed_mb = s.download_rate / (1024 * 1024)
+                      eta_str = fmt_eta(s.eta if hasattr(s, 'eta') else -1)
+                      name = h.name() if s.has_metadata else "Fetching Metadata..."
+                      print(f"📥 Torrent: {name} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
+                      if not s.is_seeding and s.progress < 1.0: all_done = False
+              print("="*50 + "\n")
+
+              if all_done and torrents: break
+              time.sleep(10)
+
+          for h in ses.get_torrents():
+              if h.status().progress < 1.0: ses.remove_torrent(h, 1)
+          time.sleep(2)
+
+          for item in os.listdir(folder_path):
+              item_path = os.path.join(folder_path, item)
+              if os.path.isdir(item_path):
+                  for subroot, _, files in os.walk(item_path):
+                      for file in files:
+                          src = os.path.join(subroot, file)
+                          dst = os.path.join(folder_path, file)
+                          if os.path.exists(dst):
+                              base, ext = os.path.splitext(file)
+                              dst = os.path.join(folder_path, f"{base}_{int(time.time())}{ext}")
+                          shutil.move(src, dst)
+                  shutil.rmtree(item_path, ignore_errors=True)
+
+          for filename in sorted(os.listdir(folder_path)):
+              file_path = os.path.join(folder_path, filename)
+              if os.path.isdir(file_path) or ".!qB" in filename or ".part" in filename: continue
+              cmd = ["curl", "-s", "-X", "PUT", "-T", file_path]
+              if pd_key: cmd.extend(["-u", f":{pd_key}"])
+              cmd.append(f"https://pixeldrain.com/api/file/{filename}")
+              subprocess.run(cmd)
+          EOF
+
