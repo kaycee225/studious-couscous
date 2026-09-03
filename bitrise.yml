@@ -13,7 +13,10 @@ workflows:
       - script@1:
           title: Setup Environment
           inputs:
-            - content: sudo apt-get update && sudo apt-get install -y python3-libtorrent p7zip-full python3-requests
+            - content: |-
+                sudo apt-get update
+                sudo apt-get install -y python3-libtorrent p7zip-full python3-requests python3-pip
+
       - script@1:
           title: Download, Zip & Upload to Filemirage
           inputs:
