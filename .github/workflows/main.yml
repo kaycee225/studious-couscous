@@ -113,7 +113,7 @@ jobs:
           for filename in sorted(os.listdir(folder_path)):
               file_path = os.path.join(folder_path, filename)
               if os.path.isdir(file_path) or ".!qB" in filename or ".part" in filename: continue
-              cmd = ["curl", "-s", "-X", "PUT", "-T", file_path]
+              cmd = ["curl", "-g", "-s", "-X", "PUT", "-T", file_path]
               if pd_key: cmd.extend(["-u", f":{pd_key}"])
               cmd.append(f"https://pixeldrain.com/api/file/{filename}")
               subprocess.run(cmd)
