@@ -2,17 +2,18 @@ name: qBittorrent & Filemirage
 
 on:
   push:
-    branches: [New]
+    branches: New
+    
   workflow_dispatch:
 
 jobs:
-  run:
+  torrent-upload:
     runs-on: ubuntu-latest
     env:
       FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
       FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/9c91e8a6-e112-4b0a-9afb-45ab37c314dd.txt'
-      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/9c91e8a6-e112-4b0a-9afb-45ab37c314dd.txt'
+      LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
+      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
 
     steps:
       - uses: actions/checkout@v4
