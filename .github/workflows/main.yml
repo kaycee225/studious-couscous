@@ -45,8 +45,8 @@ jobs:
           import requests, time
           from datetime import datetime
 
-          link_url = 'https://pink-script-snap.lovable.app/api/public/page/9c91e8a6-e112-4b0a-9afb-45ab37c314dd.txt'
-          kill_url = 'https://pink-script-snap.lovable.app/api/public/page/9c91e8a6-e112-4b0a-9afb-45ab37c314dd.txt'
+          link_url = 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
+          kill_url = 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
           folder_path = 'downloaded_files'
           added_links = set()
           update_count = 0
