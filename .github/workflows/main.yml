@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Dependencies
-        run: sudo apt update && sudo apt install npm p7zip-full curl python3-requests -y && sudo npm install -g webtorrent-cli
+        run: sudo apt update && sudo apt install npm p7zip-full curl python3-requests -y && npm install -g webtorrent-cli
 
       - name: Download, Pack & Upload
         run: |
