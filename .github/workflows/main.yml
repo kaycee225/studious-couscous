@@ -146,7 +146,7 @@ jobs:
           subtitle_extensions = ('.srt', '.ass', '.vtt', '.sub')
           media_extensions = video_extensions + subtitle_extensions
 
-          MAX_SIZE_BYTES = 5900 * 1024 * 1024  # 5.9 GB limit
+          MAX_SIZE_BYTES = 8700 * 1024 * 1024  # 5.9 GB limit
 
           def get_dir_size(path):
               return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(path) for f in fn if not os.path.islink(os.path.join(dp, f)))
