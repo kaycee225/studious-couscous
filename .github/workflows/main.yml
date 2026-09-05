@@ -3,7 +3,6 @@ name: qBittorrent & Filemirage
 on:
   push:
     branches: bh
-    
   workflow_dispatch:
 
 jobs:
@@ -17,6 +16,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
       - name: Install Dependencies
         run: sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests -y
 
@@ -42,12 +42,15 @@ jobs:
           sleep 5
 
           python3 - << 'EOF'
-          import requests, time
+          import requests, time, os
           from datetime import datetime
 
           link_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/ce8d8c24-ef9c-42cb-a573-e13fc1a97381'
           kill_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/ce8d8c24-ef9c-42cb-a573-e13fc1a97381'
           folder_path = 'downloaded_files'
+          
+          # Fix path mismatch by deriving absolute workspace directory
+          abs_folder_path = os.path.abspath(folder_path)
           added_links = set()
           update_count = 0
 
@@ -80,7 +83,7 @@ jobs:
                       for link in page.splitlines():
                           link = link.strip()
                           if link and not link.startswith('#') and link not in added_links:
-                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': f'/home/runner/work/../{folder_path}'})
+                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': abs_folder_path})
                               added_links.add(link)
                   except Exception: pass
 
@@ -113,7 +116,7 @@ jobs:
         run: |
           python3 - << 'EOF'
           import os, shutil, subprocess
-          root_dir = "downloaded_files"
+          root_dir = os.path.abspath("downloaded_files")
           video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
           sub_ext = ('.srt', '.ass', '.vtt', '.sub')
           media_ext = video_ext + sub_ext
@@ -122,33 +125,47 @@ jobs:
           def get_dir_size(p):
               return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
 
-          for item in os.listdir(root_dir):
-              item_path = os.path.join(root_dir, item)
-              if os.path.isdir(item_path):
-                  videos = [f for f in os.listdir(item_path) if f.lower().endswith(video_ext)]
-                  if len(videos) > 3:
-                      zip_name = f"{item}.zip"
-                      folder_size = get_dir_size(item_path)
-                      orig = os.getcwd()
-                      os.chdir(root_dir)
-                      if folder_size > max_size_bytes:
-                          subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
+          if os.path.exists(root_dir):
+              for item in os.listdir(root_dir):
+                  item_path = os.path.join(root_dir, item)
+                  if os.path.isdir(item_path):
+                      videos = [f for f in os.listdir(item_path) if f.lower().endswith(video_ext)]
+                      if len(videos) > 3:
+                          zip_name = f"{item}.zip"
+                          folder_size = get_dir_size(item_path)
+                          orig = os.getcwd()
+                          os.chdir(root_dir)
+                          if folder_size > max_size_bytes:
+                              subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
+                          else:
+                              subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
+                          os.chdir(orig)
+                          shutil.rmtree(item_path)
                       else:
-                          subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
-                      os.chdir(orig)
-                      shutil.rmtree(item_path)
-                  else:
-                      for r, _, files in os.walk(item_path):
-                          for f in files:
-                              if f.lower().endswith(media_ext):
-                                  dst = os.path.join(root_dir, f)
-                                  if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
-                      shutil.rmtree(item_path, ignore_errors=True)
+                          for r, _, files in os.walk(item_path):
+                              for f in files:
+                                  if f.lower().endswith(media_ext):
+                                      dst = os.path.join(root_dir, f)
+                                      if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
+                          shutil.rmtree(item_path, ignore_errors=True)
           EOF
 
-      - name: Upload to Pixeldrain
+      - name: Upload Files
         run: |
-          find "$FOLDER_PATH" -type f -print0 | sort -z | while IFS= read -r -d '' FILE; do
+          ABS_PATH="$(pwd)/$FOLDER_PATH"
+          echo "Scanning folder for upload: $ABS_PATH"
+          ls -la "$ABS_PATH"
+
+          find "$ABS_PATH" -type f -print0 | sort -z | while IFS= read -r -d '' FILE; do
               if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then continue; fi
-              curl -s -u ":${{ env.FILEMIRAGE_API_TOKEN }}" -F "file=@$FILE" https://pixeldrain.com/api/file
+              echo "----------------------------------------"
+              echo "Uploading: $FILE"
+              
+              # Filemirage API Upload
+              RESPONSE=$(curl -w "\nHTTP_STATUS:%{http_code}" -F "token=${{ env.FILEMIRAGE_API_TOKEN }}" -F "file=@$FILE" https://filemirage.com/api/v1/upload)
+              
+              # If uploading to Pixeldrain instead, comment out the line above and uncomment below:
+              # RESPONSE=$(curl -w "\nHTTP_STATUS:%{http_code}" -u ":${{ env.FILEMIRAGE_API_TOKEN }}" -F "file=@$FILE" https://pixeldrain.com/api/file)
+
+              echo "Response payload: $RESPONSE"
           done
