@@ -1,4 +1,4 @@
-name: qBittorrent & Filemirage
+Name: qBittorrent & Filemirage
 
 on:
   push:
@@ -42,12 +42,13 @@ jobs:
           sleep 5
 
           python3 - << 'EOF'
-          import requests, time
+          import requests, time, os
           from datetime import datetime
 
           link_url = 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
           kill_url = 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
           folder_path = 'downloaded_files'
+          absolute_save_path = os.path.abspath(folder_path)
           added_links = set()
           update_count = 0
 
@@ -80,7 +81,7 @@ jobs:
                       for link in page.splitlines():
                           link = link.strip()
                           if link and not link.startswith('#') and link not in added_links:
-                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': f'/home/runner/work/../{folder_path}'})
+                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': absolute_save_path})
                               added_links.add(link)
                   except Exception: pass
 
@@ -122,28 +123,29 @@ jobs:
           def get_dir_size(p):
               return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
 
-          for item in os.listdir(root_dir):
-              item_path = os.path.join(root_dir, item)
-              if os.path.isdir(item_path):
-                  videos = [f for f in os.listdir(item_path) if f.lower().endswith(video_ext)]
-                  if len(videos) > 3:
-                      zip_name = f"{item}.zip"
-                      folder_size = get_dir_size(item_path)
-                      orig = os.getcwd()
-                      os.chdir(root_dir)
-                      if folder_size > max_size_bytes:
-                          subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
+          if os.path.exists(root_dir):
+              for item in os.listdir(root_dir):
+                  item_path = os.path.join(root_dir, item)
+                  if os.path.isdir(item_path):
+                      videos = [f for f in os.listdir(item_path) if f.lower().endswith(video_ext)]
+                      if len(videos) > 3:
+                          zip_name = f"{item}.zip"
+                          folder_size = get_dir_size(item_path)
+                          orig = os.getcwd()
+                          os.chdir(root_dir)
+                          if folder_size > max_size_bytes:
+                              subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
+                          else:
+                              subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
+                          os.chdir(orig)
+                          shutil.rmtree(item_path)
                       else:
-                          subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
-                      os.chdir(orig)
-                      shutil.rmtree(item_path)
-                  else:
-                      for r, _, files in os.walk(item_path):
-                          for f in files:
-                              if f.lower().endswith(media_ext):
-                                  dst = os.path.join(root_dir, f)
-                                  if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
-                      shutil.rmtree(item_path, ignore_errors=True)
+                          for r, _, files in os.walk(item_path):
+                              for f in files:
+                                  if f.lower().endswith(media_ext):
+                                      dst = os.path.join(root_dir, f)
+                                      if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
+                          shutil.rmtree(item_path, ignore_errors=True)
           EOF
 
       - name: Upload to Filemirage
@@ -156,6 +158,11 @@ jobs:
               exit 1
           fi
           echo "🌐 Target Server: $SERVER"
+
+          if [ ! -d "$FOLDER_PATH" ]; then
+              echo "❌ Error: Folder $FOLDER_PATH does not exist."
+              exit 1
+          fi
 
           find "$FOLDER_PATH" -type f | sort | while read -r FILE; do
               if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then continue; fi
