@@ -2,27 +2,29 @@ name: qBittorrent & Filemirage
 
 on:
   push:
-    branches: bh
+    branches: jj
+    
   workflow_dispatch:
 
 jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      FILEMIRAGE_API_TOKEN: '0bfe0b11-611d-4bb3-9b4c-36dbaa5a1fd5'
+      FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
       FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/ce8d8c24-ef9c-42cb-a573-e13fc1a97381'
-      KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/ce8d8c24-ef9c-42cb-a573-e13fc1a97381'
+      LINK_FETCH_URL: ''
+      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
 
     steps:
       - uses: actions/checkout@v4
-
+      
       - name: Install Dependencies
         run: sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests -y
 
       - name: Download with qBittorrent & Boxed Progress
         run: |
           mkdir -p "$FOLDER_PATH"
+          mkdir -p torrents
           touch added_links.txt
           mkdir -p ~/.config/qBittorrent
           cat << 'EOF' > ~/.config/qBittorrent/qBittorrent.conf
@@ -42,15 +44,13 @@ jobs:
           sleep 5
 
           python3 - << 'EOF'
-          import requests, time, os
+          import requests, time, os, glob
           from datetime import datetime
 
-          link_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/ce8d8c24-ef9c-42cb-a573-e13fc1a97381'
-          kill_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/ce8d8c24-ef9c-42cb-a573-e13fc1a97381'
-          folder_path = 'downloaded_files'
-          
-          # Fix path mismatch by deriving absolute workspace directory
-          abs_folder_path = os.path.abspath(folder_path)
+          link_url = os.environ.get('LINK_FETCH_URL')
+          kill_url = os.environ.get('KILL_SWITCH_URL')
+          folder_path = os.environ.get('FOLDER_PATH', 'downloaded_files')
+          absolute_save_path = os.path.abspath(folder_path)
           added_links = set()
           update_count = 0
 
@@ -63,6 +63,7 @@ jobs:
               update_count += 1
               timestamp = datetime.now().strftime("%H:%M:%S")
 
+              # 1. Handle Kill Switch
               if kill_url:
                   try:
                       ks = requests.get(kill_url, timeout=5).text
@@ -77,16 +78,33 @@ jobs:
                                   requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={'hashes': t['hash'], 'deleteFiles': 'true'})
                   except Exception: pass
 
+              # 2. Add Local .torrent Files from repository (torrents/ folder)
+              for torrent_file in glob.glob("*.torrent"):
+                  if torrent_file not in added_links:
+                      try:
+                          with open(torrent_file, 'rb') as f:
+                              requests.post(
+                                  'http://127.0.0.1:8080/api/v2/torrents/add',
+                                  files={'torrents': f},
+                                  data={'savepath': absolute_save_path}
+                              )
+                          added_links.add(torrent_file)
+                          print(f"📥 Added local torrent file: {torrent_file}")
+                      except Exception as e:
+                          print(f"⚠️ Failed to add local torrent {torrent_file}: {e}")
+
+              # 3. Add Remote Links/Magnets/Torrent URLs
               if link_url:
                   try:
                       page = requests.get(link_url, timeout=5).text
                       for link in page.splitlines():
                           link = link.strip()
                           if link and not link.startswith('#') and link not in added_links:
-                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': abs_folder_path})
+                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': absolute_save_path})
                               added_links.add(link)
                   except Exception: pass
 
+              # 4. Monitor Progress
               try:
                   res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
                   print(f"\n" + "="*50)
@@ -116,7 +134,7 @@ jobs:
         run: |
           python3 - << 'EOF'
           import os, shutil, subprocess
-          root_dir = os.path.abspath("downloaded_files")
+          root_dir = "downloaded_files"
           video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
           sub_ext = ('.srt', '.ass', '.vtt', '.sub')
           media_ext = video_ext + sub_ext
@@ -150,22 +168,36 @@ jobs:
                           shutil.rmtree(item_path, ignore_errors=True)
           EOF
 
-      - name: Upload Files
+      - name: Upload to Filemirage
         run: |
-          ABS_PATH="$(pwd)/$FOLDER_PATH"
-          echo "Scanning folder for upload: $ABS_PATH"
-          ls -la "$ABS_PATH"
+          echo "Fetching Filemirage server..."
+          SERVER=$(curl -s https://filemirage.com/api/servers | jq -r '.data.server // empty')
+          
+          if [ -z "$SERVER" ] || [ "$SERVER" == "null" ]; then
+              echo "❌ Error: Could not fetch a valid Filemirage server URL from API."
+              exit 1
+          fi
+          echo "🌐 Target Server: $SERVER"
 
-          find "$ABS_PATH" -type f -print0 | sort -z | while IFS= read -r -d '' FILE; do
+          if [ ! -d "$FOLDER_PATH" ]; then
+              echo "❌ Error: Folder $FOLDER_PATH does not exist."
+              exit 1
+          fi
+
+          find "$FOLDER_PATH" -type f | sort | while read -r FILE; do
               if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then continue; fi
-              echo "----------------------------------------"
-              echo "Uploading: $FILE"
+              FILENAME=$(basename "$FILE")
+              echo "📤 Uploading: $FILENAME..."
               
-              # Filemirage API Upload
-              RESPONSE=$(curl -w "\nHTTP_STATUS:%{http_code}" -F "token=${{ env.FILEMIRAGE_API_TOKEN }}" -F "file=@$FILE" https://filemirage.com/api/v1/upload)
+              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                  -H "Authorization: Bearer ${{ env.FILEMIRAGE_API_TOKEN }}" \
+                  -F "file=@$FILE;filename=$FILENAME" \
+                  "$SERVER/upload.php")
               
-              # If uploading to Pixeldrain instead, comment out the line above and uncomment below:
-              # RESPONSE=$(curl -w "\nHTTP_STATUS:%{http_code}" -u ":${{ env.FILEMIRAGE_API_TOKEN }}" -F "file=@$FILE" https://pixeldrain.com/api/file)
-
-              echo "Response payload: $RESPONSE"
+              if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 201 ]; then
+                  echo "✅ Successfully uploaded: $FILENAME"
+              else
+                  echo "❌ Failed to upload $FILENAME (HTTP Status: $HTTP_STATUS)"
+                  exit 1
+              fi
           done
