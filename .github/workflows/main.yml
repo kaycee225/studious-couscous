@@ -148,9 +148,29 @@ jobs:
 
       - name: Upload to Filemirage
         run: |
-          SERVER=$(curl -s https://filemirage.com/api/servers | jq -r '.data.server')
+          echo "Fetching Filemirage server..."
+          SERVER=$(curl -s https://filemirage.com/api/servers | jq -r '.data.server // empty')
+          
+          if [ -z "$SERVER" ] || [ "$SERVER" == "null" ]; then
+              echo "❌ Error: Could not fetch a valid Filemirage server URL from API."
+              exit 1
+          fi
+          echo "🌐 Target Server: $SERVER"
+
           find "$FOLDER_PATH" -type f | sort | while read -r FILE; do
               if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then continue; fi
               FILENAME=$(basename "$FILE")
-              curl -s -H "Authorization: Bearer ${{ env.FILEMIRAGE_API_TOKEN }}" -F "file=@$FILE;filename=$FILENAME" "$SERVER/upload.php"
+              echo "📤 Uploading: $FILENAME..."
+              
+              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                  -H "Authorization: Bearer ${{ env.FILEMIRAGE_API_TOKEN }}" \
+                  -F "file=@$FILE;filename=$FILENAME" \
+                  "$SERVER/upload.php")
+              
+              if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 201 ]; then
+                  echo "✅ Successfully uploaded: $FILENAME"
+              else
+                  echo "❌ Failed to upload $FILENAME (HTTP Status: $HTTP_STATUS)"
+                  exit 1
+              fi
           done
