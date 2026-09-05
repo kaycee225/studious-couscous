@@ -12,8 +12,8 @@ jobs:
     env:
       FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
       FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: ''
-      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
+      LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/69d58a30-7b54-4cf5-a826-cffd80c3c917'
+      KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/69d58a30-7b54-4cf5-a826-cffd80c3c917'
 
     steps:
       - uses: actions/checkout@v4
