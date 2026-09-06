@@ -142,7 +142,7 @@ jobs:
               exit 1
           fi
 
-          find "$FOLDER_PATH" -type f -print0 | sort -z | while IFS=read -r -d '' FILE; do
+          find "$FOLDER_PATH" -type f -print0 | sort -z | while read -r -d '' FILE; do
               if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then continue; fi
               FILENAME=$(basename "$FILE")
               echo "📤 Uploading: $FILENAME..."
