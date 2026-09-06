@@ -1,4 +1,4 @@
-name: qBittorrent & Filemirage
+name: qBittorrent & Pixeldrain
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
+      PIXELDRAIN_API_KEY: '0bfe0b11-611d-4bb3-9b4c-36dbaa5a1fd5'
       FOLDER_PATH: 'downloaded_files'
       LINK_FETCH_URL: ''
       KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/69d58a30-7b54-4cf5-a826-cffd80c3c917'
@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       
       - name: Install Dependencies
-        run: sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests -y
+        run: sudo apt update && sudo apt install qbittorrent-nox jq curl python3 python3-requests -y
 
       - name: Download with qBittorrent & Boxed Progress
         run: |
@@ -68,7 +68,7 @@ jobs:
                   try:
                       ks = requests.get(kill_url, timeout=5).text
                       if "STOP.ALL.TORRENTS" in ks:
-                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Filemirage] Global kill switch activated! | {timestamp}\n" + "="*50)
+                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Pixeldrain] Global kill switch activated! | {timestamp}\n" + "="*50)
                           break
                       targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
                       if targets:
@@ -78,8 +78,8 @@ jobs:
                                   requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={'hashes': t['hash'], 'deleteFiles': 'true'})
                   except Exception: pass
 
-              # 2. Add Local .torrent Files from repository (torrents/ folder)
-              for torrent_file in glob.glob("*.torrent"):
+              # 2. Add Local .torrent Files from repository
+              for torrent_file in glob.glob("*.torrent") + glob.glob("torrents/*.torrent"):
                   if torrent_file not in added_links:
                       try:
                           with open(torrent_file, 'rb') as f:
@@ -108,7 +108,7 @@ jobs:
               try:
                   res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
                   print(f"\n" + "="*50)
-                  print(f"🔄 [GH-qBittorrent-Filemirage] Progress Update #{update_count} | {timestamp}")
+                  print(f"🔄 [GH-qBittorrent-Pixeldrain] Progress Update #{update_count} | {timestamp}")
                   print("-"*50)
                   if not res:
                       print("📥 Waiting for active torrents...")
@@ -130,79 +130,34 @@ jobs:
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Smart Zipping & Splitting
+      - name: Upload to Pixeldrain
         run: |
-          python3 - << 'EOF'
-          import os, shutil, subprocess
-          root_dir = "downloaded_files"
-          video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-          sub_ext = ('.srt', '.ass', '.vtt', '.sub')
-          media_ext = video_ext + sub_ext
-          max_size_bytes = 7000 * 1024 * 1024
-
-          def get_dir_size(p):
-              return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
-
-          if os.path.exists(root_dir):
-              for item in os.listdir(root_dir):
-                  item_path = os.path.join(root_dir, item)
-                  if os.path.isdir(item_path):
-                      # Recursively find all video files in all subfolders
-                      videos = [
-                          f for r, _, files in os.walk(item_path)
-                          for f in files if f.lower().endswith(video_ext)
-                      ]
-                      
-                      if len(videos) > 3:
-                          zip_name = f"{item}.zip"
-                          folder_size = get_dir_size(item_path)
-                          orig = os.getcwd()
-                          os.chdir(root_dir)
-                          if folder_size > max_size_bytes:
-                              subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
-                          else:
-                              subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
-                          os.chdir(orig)
-                          shutil.rmtree(item_path)
-                      else:
-                          for r, _, files in os.walk(item_path):
-                              for f in files:
-                                  if f.lower().endswith(media_ext):
-                                      dst = os.path.join(root_dir, f)
-                                      if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
-                          shutil.rmtree(item_path, ignore_errors=True)
-          EOF
-
-      - name: Upload to Filemirage
-        run: |
-          echo "Fetching Filemirage server..."
-          SERVER=$(curl -s https://filemirage.com/api/servers | jq -r '.data.server // empty')
-          
-          if [ -z "$SERVER" ] || [ "$SERVER" == "null" ]; then
-              echo "❌ Error: Could not fetch a valid Filemirage server URL from API."
+          if [ -z "$PIXELDRAIN_API_KEY" ]; then
+              echo "❌ Error: PIXELDRAIN_API_KEY is not set."
               exit 1
           fi
-          echo "🌐 Target Server: $SERVER"
 
           if [ ! -d "$FOLDER_PATH" ]; then
               echo "❌ Error: Folder $FOLDER_PATH does not exist."
               exit 1
           fi
 
-          find "$FOLDER_PATH" -type f | sort | while read -r FILE; do
+          find "$FOLDER_PATH" -type f -print0 | sort -z | while IFS=read -r -d '' FILE; do
               if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then continue; fi
               FILENAME=$(basename "$FILE")
               echo "📤 Uploading: $FILENAME..."
               
-              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-                  -H "Authorization: Bearer ${{ env.FILEMIRAGE_API_TOKEN }}" \
+              RESPONSE=$(curl -s -u ":$PIXELDRAIN_API_KEY" \
                   -F "file=@$FILE;filename=$FILENAME" \
-                  "$SERVER/upload.php")
+                  "https://pixeldrain.com/api/file")
               
-              if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 201 ]; then
-                  echo "✅ Successfully uploaded: $FILENAME"
+              SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+              FILE_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
+              
+              if [ "$SUCCESS" = "true" ] && [ -n "$FILE_ID" ] && [ "$FILE_ID" != "null" ]; then
+                  echo "✅ Successfully uploaded: $FILENAME (ID: $FILE_ID)"
               else
-                  echo "❌ Failed to upload $FILENAME (HTTP Status: $HTTP_STATUS)"
+                  echo "❌ Failed to upload $FILENAME. Response: $RESPONSE"
                   exit 1
               fi
           done
