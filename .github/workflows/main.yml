@@ -2,7 +2,7 @@ name: qBittorrent & Pixeldrain
 
 on:
   push:
-    branches: Pixelup
+    branches: Pix
     
   workflow_dispatch:
 
@@ -112,32 +112,49 @@ jobs:
           
       - name: Upload to Pixeldrain
         run: |
-          if [ -z "$PIXELDRAIN_API_KEY" ]; then
-              echo "❌ Error: PIXELDRAIN_API_KEY is not set."
-              exit 1
-          fi
+          python3 - << 'EOF'
+          import os
+          import requests
 
-          if [ ! -d "$FOLDER_PATH" ]; then
-              echo "❌ Error: Folder $FOLDER_PATH does not exist."
-              exit 1
-          fi
+          api_key = os.environ.get("PIXELDRAIN_API_KEY")
+          folder_path = os.environ.get("FOLDER_PATH", "downloaded_files")
 
-          find "$FOLDER_PATH" -type f -print0 | sort -z | while read -r -d '' FILE; do
-              if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then continue; fi
-              FILENAME=$(basename "$FILE")
-              echo "📤 Uploading: $FILENAME..."
-              
-              RESPONSE=$(curl -s -u ":$PIXELDRAIN_API_KEY" \
-                  -F "file=@$FILE;filename=$FILENAME" \
-                  "https://pixeldrain.com/api/file")
-              
-              SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
-              FILE_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
-              
-              if [ "$SUCCESS" = "true" ] && [ -n "$FILE_ID" ] && [ "$FILE_ID" != "null" ]; then
-                  echo "✅ Successfully uploaded: $FILENAME (ID: $FILE_ID)"
-              else
-                  echo "❌ Failed to upload $FILENAME. Response: $RESPONSE"
-                  exit 1
-              fi
-          done
+          if not api_key:
+              print("❌ Error: PIXELDRAIN_API_KEY is not set.")
+              exit(1)
+
+          if not os.path.exists(folder_path):
+              print(f"❌ Error: Folder {folder_path} does not exist.")
+              exit(1)
+
+          for root, dirs, files in os.walk(folder_path):
+              for filename in sorted(files):
+                  if ".!qB" in filename or ".part" in filename:
+                      continue
+                  
+                  file_path = os.path.join(root, filename)
+                  print(f"📤 Uploading: {filename}...")
+
+                  try:
+                      with open(file_path, "rb") as f:
+                          response = requests.post(
+                              "https://pixeldrain.com/api/file",
+                              auth=("", api_key),
+                              files={"file": (filename, f)}
+                          )
+                      
+                      res_json = response.json()
+                      success = res_json.get("success", False)
+                      file_id = res_json.get("id")
+
+                      if success and file_id:
+                          print(f"✅ Successfully uploaded: {filename} (ID: {file_id})")
+                          os.remove(file_path)
+                          print(f"🗑️ Cleaned up local file: {filename}")
+                      else:
+                          print(f"❌ Failed to upload {filename}. Response: {response.text}")
+                          exit(1)
+                  except Exception as e:
+                      print(f"❌ Exception during upload of {filename}: {e}")
+                      exit(1)
+          EOF
