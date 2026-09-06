@@ -122,17 +122,15 @@ jobs:
               exit 1
           fi
 
-          find "$FOLDER_PATH" -type f -print0 | sort -z | while IFS=read -r -d '' FILE; do
+          find "$FOLDER_PATH" -type f -print0 | sort -z | while read -r -d '' FILE; do
               if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then continue; fi
               FILENAME=$(basename "$FILE")
               echo "📤 Uploading: $FILENAME..."
               
-              # Pixeldrain API endpoint with HTTP Basic Auth (username empty, password: API_KEY)
               RESPONSE=$(curl -s -u ":$PIXELDRAIN_API_KEY" \
                   -F "file=@$FILE;filename=$FILENAME" \
                   "https://pixeldrain.com/api/file")
               
-              # Check if upload was successful by looking for the "id" field in the JSON response
               SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
               FILE_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
               
