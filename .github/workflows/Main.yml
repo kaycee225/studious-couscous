@@ -2,7 +2,7 @@ name: Download Torrent and Upload to Filemirage
 on:
   push:
     branches:
-      - Bitrise
+      - aribaby
   workflow_dispatch: # Allows manual trigger from GitHub UI
 jobs:
   process_files:
@@ -29,7 +29,7 @@ jobs:
           from urllib.parse import urlparse
           from magnet2torrent import Magnet2Torrent, FailedToFetchException
 
-          link_url = "https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt"
+          link_url = "https://pink-script-snap.lovable.app/api/public/page/e625b079-9246-4bd1-9626-c7c2fe3142a0.txt"
 
           async def main():
               try:
