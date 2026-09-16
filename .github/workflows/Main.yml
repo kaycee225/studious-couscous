@@ -1,5 +1,8 @@
 name: Download Torrent and Upload to Filemirage
 on:
+  push:
+    branches:
+      - Bitrise
   workflow_dispatch: # Allows manual trigger from GitHub UI
 jobs:
   process_files:
