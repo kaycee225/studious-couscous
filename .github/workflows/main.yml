@@ -18,7 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Dependencies
-        run: sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests -y
+        run: |
+          sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests python3-pip -y
+          sudo python3 -m pip install --no-cache-dir --break-system-packages natsort
 
       - name: Download with qBittorrent & Boxed Progress
         run: |
@@ -112,78 +114,198 @@ jobs:
 
       - name: Smart Zipping & Splitting
         run: |
-          python3 - << 'EOF'
-          import os, shutil, subprocess
-          root_dir = "downloaded_files"
+          python3 -u - << 'EOF'
+          import os, shutil, subprocess, re
+          from collections import defaultdict
+          from natsort import natsorted
+
+          folder = os.environ.get("FOLDER_PATH", "downloaded_files")
           video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-          sub_ext = ('.srt', '.ass', '.vtt', '.sub')
-          media_ext = video_ext + sub_ext
-          max_size_bytes = 7000 * 1024 * 1024
+          media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
+          max_bytes = 10000 * 1024 * 1024
 
           def get_dir_size(p):
-              return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
+              return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
 
-          if os.path.exists(root_dir):
-              for item in os.listdir(root_dir):
-                  item_path = os.path.join(root_dir, item)
+          def create_7z_group(group_name, file_paths, base_dir, max_bytes_limit):
+              group_dir = os.path.join(base_dir, group_name)
+              os.makedirs(group_dir, exist_ok=True)
+              
+              files_to_move = list(file_paths)
+              for p in file_paths:
+                  base_stem = os.path.splitext(p)[0]
+                  for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
+                      sub_file = base_stem + sub_ext
+                      if os.path.exists(sub_file) and sub_file not in files_to_move:
+                          files_to_move.append(sub_file)
+
+              for p in files_to_move:
+                  dst = os.path.join(group_dir, os.path.basename(p))
+                  if p != dst and not os.path.exists(dst):
+                      shutil.move(p, dst)
+              
+              folder_size = get_dir_size(group_dir)
+              zip_name = f"{group_name}.zip"
+              orig = os.getcwd()
+              os.chdir(base_dir)
+              cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, group_name]
+              if folder_size > max_bytes_limit:
+                  cmd.insert(2, "-v5900m")
+              subprocess.run(cmd, check=True)
+              os.chdir(orig)
+              shutil.rmtree(group_dir)
+
+          if os.path.exists(folder):
+              for item in natsorted(os.listdir(folder)):
+                  item_path = os.path.join(folder, item)
                   if os.path.isdir(item_path):
-                      # Recursively find all video files in all subfolders
-                      videos = [
-                          f for r, _, files in os.walk(item_path)
+                      vids = natsorted([
+                          os.path.join(r, f) for r, _, files in os.walk(item_path)
                           for f in files if f.lower().endswith(video_ext)
-                      ]
-                      
-                      if len(videos) > 3:
-                          zip_name = f"{item}.zip"
+                      ])
+                      if len(vids) > 3:
+                          print(f"📦 Zipping folder: {item}")
                           folder_size = get_dir_size(item_path)
                           orig = os.getcwd()
-                          os.chdir(root_dir)
-                          if folder_size > max_size_bytes:
-                              subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
-                          else:
-                              subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
+                          os.chdir(folder)
+                          zip_name = f"{item}.zip"
+                          cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, item]
+                          if folder_size > max_bytes:
+                              cmd.insert(2, "-v5900m")
+                          subprocess.run(cmd, check=True)
                           os.chdir(orig)
                           shutil.rmtree(item_path)
-                      else:
-                          for r, _, files in os.walk(item_path):
-                              for f in files:
-                                  if f.lower().endswith(media_ext):
-                                      dst = os.path.join(root_dir, f)
-                                      if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
-                          shutil.rmtree(item_path, ignore_errors=True)
-          EOF
 
+          all_videos = []
+          for r, _, files in os.walk(folder):
+              for f in files:
+                  if f.lower().endswith(video_ext):
+                      all_videos.append(os.path.join(r, f))
+
+          all_videos = natsorted(all_videos)
+
+          series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
+          
+          series_groups = defaultdict(list)
+          unmatched_videos = []
+
+          for vid_path in all_videos:
+              vid_name = os.path.basename(vid_path)
+              parent_name = os.path.basename(os.path.dirname(vid_path))
+              match = series_regex.search(vid_name) or series_regex.search(parent_name)
+              
+              if match:
+                  raw_title = match.group(1) or "Season"
+                  s_num = match.group(2)
+                  group_key = f"{raw_title.strip('. -_').lower()}_S{s_num}"
+                  series_groups[group_key].append(vid_path)
+              else:
+                  unmatched_videos.append(vid_path)
+
+          for group_key in natsorted(series_groups.keys()):
+              vids = natsorted(series_groups[group_key])
+              if len(vids) > 3:
+                  first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
+                  create_7z_group(first_stem, vids, folder, max_bytes)
+              else:
+                  unmatched_videos.extend(vids)
+
+          unmatched_videos = natsorted(unmatched_videos)
+
+          if len(unmatched_videos) > 3:
+              first_stem = os.path.splitext(os.path.basename(unmatched_videos[0]))[0]
+              create_7z_group(f"Batch_{first_stem}", unmatched_videos, folder, max_bytes)
+
+          for r, dirs, files in os.walk(folder, topdown=False):
+              if r == folder: continue
+              for f in natsorted(files):
+                  if f.lower().endswith(media_ext):
+                      src = os.path.join(r, f)
+                      dst = os.path.join(folder, f)
+                      if not os.path.exists(dst): 
+                          shutil.move(src, dst)
+              shutil.rmtree(r, ignore_errors=True)
+          EOF
 
       - name: Upload to Filemirage
         run: |
-          echo "Fetching Filemirage server..."
-          SERVER=$(curl -s https://filemirage.com/api/servers | jq -r '.data.server // empty')
-          
-          if [ -z "$SERVER" ] || [ "$SERVER" == "null" ]; then
-              echo "❌ Error: Could not fetch a valid Filemirage server URL from API."
-              exit 1
-          fi
-          echo "🌐 Target Server: $SERVER"
+          python3 -u - << 'EOF'
+          import os
+          import subprocess
+          import requests
+          import time
+          import fcntl
+          from concurrent.futures import ThreadPoolExecutor
+          from natsort import natsorted
 
-          if [ ! -d "$FOLDER_PATH" ]; then
-              echo "❌ Error: Folder $FOLDER_PATH does not exist."
-              exit 1
-          fi
+          FILEMIRAGE_API_TOKEN = os.environ.get('FILEMIRAGE_API_TOKEN', '9QQH-DGES-CWQZ-FXNV')
+          FOLDER_PATH = os.environ.get('FOLDER_PATH', 'downloaded_files')
 
-          find "$FOLDER_PATH" -type f | sort | while read -r FILE; do
-              if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then continue; fi
-              FILENAME=$(basename "$FILE")
-              echo "📤 Uploading: $FILENAME..."
+          try:
+              srv_res = requests.get("https://filemirage.com/api/servers", timeout=10).json()
+              SERVER = srv_res['data']['server']
+          except Exception as e:
+              print(f"Failed to fetch Filemirage server: {e}")
+              exit(1)
+
+          def upload_single_file(file_path):
+              filename = os.path.basename(file_path)
+              file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+              print(f"⬆️ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
               
-              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-                  -H "Authorization: Bearer ${{ env.FILEMIRAGE_API_TOKEN }}" \
-                  -F "file=@$FILE;filename=$FILENAME" \
-                  "$SERVER/upload.php")
+              curl_cmd = [
+                  "curl", "-X", "POST",
+                  f"{SERVER}/upload.php",
+                  "-H", f"Authorization: Bearer {FILEMIRAGE_API_TOKEN}",
+                  "-F", f"file=@{file_path}",
+                  "--max-time", "3600"
+              ]
               
-              if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 201 ]; then
-                  echo "✅ Successfully uploaded: $FILENAME"
-              else
-                  echo "❌ Failed to upload $FILENAME (HTTP Status: $HTTP_STATUS)"
-                  exit 1
-              fi
-          done
+              proc = subprocess.Popen(curl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              
+              fd = proc.stderr.fileno()
+              fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+              fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              
+              last_print_time = time.time()
+              buffer = b""
+              
+              while proc.poll() is None:
+                  try:
+                      chunk = proc.stderr.read(1024)
+                      if chunk:
+                          buffer += chunk
+                          if b'\r' in buffer or b'\n' in buffer:
+                              lines = buffer.replace(b'\r', b'\n').split(b'\n')
+                              buffer = lines[-1]
+                              valid_lines = [L.decode('utf-8', errors='ignore').strip() for L in lines[:-1] if L.strip()]
+                              if valid_lines:
+                                  last_line = valid_lines[-1]
+                                  if time.time() - last_print_time >= 30:
+                                      print(f"📤 Progress [{filename[:25]}]: {last_line}", flush=True)
+                                      last_print_time = time.time()
+                  except Exception:
+                      pass
+                  time.sleep(0.5)
+                  
+              stdout, stderr = proc.communicate()
+              if proc.returncode == 0:
+                  print(f"✅ Finished uploading {filename}: {stdout.decode('utf-8', errors='ignore').strip()}", flush=True)
+              else:
+                  err_msg = stderr.decode('utf-8', errors='ignore').strip() if stderr else 'Unknown error'
+                  print(f"❌ Curl Error uploading {filename}: {err_msg}", flush=True)
+
+          if os.path.exists(FOLDER_PATH):
+              upload_queue = []
+              for root, dirs, files in os.walk(FOLDER_PATH):
+                  for filename in files:
+                      if not any(ext in filename for ext in [".!qB", ".part", ".aria2"]):
+                          upload_queue.append(os.path.join(root, filename))
+              
+              upload_queue = natsorted(upload_queue)
+              
+              if upload_queue:
+                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_queue)} files...", flush=True)
+                  with ThreadPoolExecutor(max_workers=4) as executor:
+                      executor.map(upload_single_file, upload_queue)
+          EOF
