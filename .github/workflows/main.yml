@@ -2,7 +2,7 @@ name: qBittorrent & Filemirage
 
 on:
   push:
-    branches: New
+    branches: kaycee225-patch-2
     
   workflow_dispatch:
 
@@ -122,40 +122,68 @@ jobs:
           folder = os.environ.get("FOLDER_PATH", "downloaded_files")
           video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
           media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
-          max_bytes = 10000 * 1024 * 1024
+          max_bytes = 7000 * 1024 * 1024  # Max 7000 MB (~7 GB) per independent .zip file
 
-          def get_dir_size(p):
-              return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
-
-          def create_7z_group(group_name, file_paths, base_dir, max_bytes_limit):
-              group_dir = os.path.join(base_dir, group_name)
-              os.makedirs(group_dir, exist_ok=True)
+          def create_independent_zips(group_name, file_paths, output_dir, max_bytes_limit=max_bytes):
+              # Naturally sort files first
+              file_paths = natsorted(list(dict.fromkeys(file_paths)))
               
-              files_to_move = list(file_paths)
+              # Pair video files with their subtitle files
+              file_groups = []
+              processed = set()
+              
               for p in file_paths:
+                  if p in processed or not os.path.exists(p):
+                      continue
+                  grp = [p]
+                  processed.add(p)
                   base_stem = os.path.splitext(p)[0]
                   for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
                       sub_file = base_stem + sub_ext
-                      if os.path.exists(sub_file) and sub_file not in files_to_move:
-                          files_to_move.append(sub_file)
+                      if os.path.exists(sub_file) and sub_file not in processed:
+                          grp.append(sub_file)
+                          processed.add(sub_file)
+                  file_groups.append(grp)
 
-              for p in files_to_move:
-                  dst = os.path.join(group_dir, os.path.basename(p))
-                  if p != dst and not os.path.exists(dst):
-                      shutil.move(p, dst)
-              
-              folder_size = get_dir_size(group_dir)
-              zip_name = f"{group_name}.zip"
-              orig = os.getcwd()
-              os.chdir(base_dir)
-              cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, group_name]
-              if folder_size > max_bytes_limit:
-                  cmd.insert(2, "-v5900m")
-              subprocess.run(cmd, check=True)
-              os.chdir(orig)
-              shutil.rmtree(group_dir)
+              # Partition into batches within max_bytes_limit
+              chunks = []
+              curr_chunk = []
+              curr_size = 0
+
+              for grp in file_groups:
+                  grp_size = sum(os.path.getsize(f) for f in grp if os.path.exists(f))
+                  if curr_chunk and (curr_size + grp_size > max_bytes_limit):
+                      chunks.append(curr_chunk)
+                      curr_chunk = []
+                      curr_size = 0
+                  curr_chunk.extend(grp)
+                  curr_size += grp_size
+
+              if curr_chunk:
+                  chunks.append(curr_chunk)
+
+              # Compress each chunk into an independent .zip archive
+              for idx, chunk in enumerate(chunks, 1):
+                  zip_filename = f"{group_name}.zip" if len(chunks) == 1 else f"{group_name}_part{idx:02d}.zip"
+                  zip_filepath = os.path.abspath(os.path.join(output_dir, zip_filename))
+                  temp_dir = os.path.join(output_dir, f"_temp_{group_name}_{idx}")
+                  os.makedirs(temp_dir, exist_ok=True)
+
+                  for f in chunk:
+                      if os.path.exists(f):
+                          dst = os.path.join(temp_dir, os.path.basename(f))
+                          if f != dst:
+                              shutil.move(f, dst)
+
+                  orig = os.getcwd()
+                  os.chdir(temp_dir)
+                  cmd = ["7z", "a", "-mx0", "-mmt=on", zip_filepath, "."]
+                  subprocess.run(cmd, check=True)
+                  os.chdir(orig)
+                  shutil.rmtree(temp_dir, ignore_errors=True)
 
           if os.path.exists(folder):
+              # 1. Process folders containing > 3 videos
               for item in natsorted(os.listdir(folder)):
                   item_path = os.path.join(folder, item)
                   if os.path.isdir(item_path):
@@ -164,67 +192,65 @@ jobs:
                           for f in files if f.lower().endswith(video_ext)
                       ])
                       if len(vids) > 3:
-                          print(f"📦 Zipping folder: {item}")
-                          folder_size = get_dir_size(item_path)
-                          orig = os.getcwd()
-                          os.chdir(folder)
-                          zip_name = f"{item}.zip"
-                          cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, item]
-                          if folder_size > max_bytes:
-                              cmd.insert(2, "-v5900m")
-                          subprocess.run(cmd, check=True)
-                          os.chdir(orig)
-                          shutil.rmtree(item_path)
+                          print(f"📦 Zipping folder independently: {item}")
+                          all_folder_files = natsorted([
+                              os.path.join(r, f) for r, _, files in os.walk(item_path)
+                              for f in files
+                          ])
+                          create_independent_zips(item, all_folder_files, folder, max_bytes)
+                          shutil.rmtree(item_path, ignore_errors=True)
 
-          all_videos = []
-          for r, _, files in os.walk(folder):
-              for f in files:
-                  if f.lower().endswith(video_ext):
-                      all_videos.append(os.path.join(r, f))
+              # 2. Find remaining video files
+              all_videos = []
+              for r, _, files in os.walk(folder):
+                  for f in files:
+                      if f.lower().endswith(video_ext):
+                          all_videos.append(os.path.join(r, f))
 
-          all_videos = natsorted(all_videos)
+              all_videos = natsorted(all_videos)
 
-          series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
-          
-          series_groups = defaultdict(list)
-          unmatched_videos = []
+              series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
+              series_groups = defaultdict(list)
+              unmatched_videos = []
 
-          for vid_path in all_videos:
-              vid_name = os.path.basename(vid_path)
-              parent_name = os.path.basename(os.path.dirname(vid_path))
-              match = series_regex.search(vid_name) or series_regex.search(parent_name)
-              
-              if match:
-                  raw_title = match.group(1) or "Season"
-                  s_num = match.group(2)
-                  group_key = f"{raw_title.strip('. -_').lower()}_S{s_num}"
-                  series_groups[group_key].append(vid_path)
-              else:
-                  unmatched_videos.append(vid_path)
+              for vid_path in all_videos:
+                  vid_name = os.path.basename(vid_path)
+                  parent_name = os.path.basename(os.path.dirname(vid_path))
+                  match = series_regex.search(vid_name) or series_regex.search(parent_name)
+                  
+                  if match:
+                      raw_title = match.group(1) or "Season"
+                      s_num = match.group(2)
+                      group_key = f"{raw_title.strip('. -_').lower()}_S{s_num}"
+                      series_groups[group_key].append(vid_path)
+                  else:
+                      unmatched_videos.append(vid_path)
 
-          for group_key in natsorted(series_groups.keys()):
-              vids = natsorted(series_groups[group_key])
-              if len(vids) > 3:
-                  first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
-                  create_7z_group(first_stem, vids, folder, max_bytes)
-              else:
-                  unmatched_videos.extend(vids)
+              # 3. Zip series groups (>3 videos) into independent .zip files
+              for group_key in natsorted(series_groups.keys()):
+                  vids = natsorted(series_groups[group_key])
+                  if len(vids) > 3:
+                      first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
+                      create_independent_zips(first_stem, vids, folder, max_bytes)
+                  else:
+                      unmatched_videos.extend(vids)
 
-          unmatched_videos = natsorted(unmatched_videos)
+              # 4. Zip remaining unmatched videos (>3 videos) into independent .zip files
+              unmatched_videos = natsorted(unmatched_videos)
+              if len(unmatched_videos) > 3:
+                  first_stem = os.path.splitext(os.path.basename(unmatched_videos[0]))[0]
+                  create_independent_zips(f"Batch_{first_stem}", unmatched_videos, folder, max_bytes)
 
-          if len(unmatched_videos) > 3:
-              first_stem = os.path.splitext(os.path.basename(unmatched_videos[0]))[0]
-              create_7z_group(f"Batch_{first_stem}", unmatched_videos, folder, max_bytes)
-
-          for r, dirs, files in os.walk(folder, topdown=False):
-              if r == folder: continue
-              for f in natsorted(files):
-                  if f.lower().endswith(media_ext):
-                      src = os.path.join(r, f)
-                      dst = os.path.join(folder, f)
-                      if not os.path.exists(dst): 
-                          shutil.move(src, dst)
-              shutil.rmtree(r, ignore_errors=True)
+              # 5. Clean up loose files
+              for r, dirs, files in os.walk(folder, topdown=False):
+                  if r == folder: continue
+                  for f in natsorted(files):
+                      if f.lower().endswith(media_ext):
+                          src = os.path.join(r, f)
+                          dst = os.path.join(folder, f)
+                          if not os.path.exists(dst): 
+                              shutil.move(src, dst)
+                  shutil.rmtree(r, ignore_errors=True)
           EOF
 
       - name: Upload to Filemirage
