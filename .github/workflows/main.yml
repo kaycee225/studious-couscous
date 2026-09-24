@@ -4,21 +4,21 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - Webtor
+      - kaycee225-patch-1
 
 jobs:
   download-group-upload:
     runs-on: ubuntu-latest
-  
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Install System & Python Dependencies
         run: |
-          echo "📦 Installing libtorrent, curl, and python packages..."
+          echo "📦 Installing qbittorrent-nox, curl, and python packages..."
           sudo apt update -qq
-          sudo apt install -y -qq python3-libtorrent python3 python3-requests python3-pip curl
+          sudo apt install -y -qq qbittorrent-nox python3 python3-requests python3-pip curl
           pip3 install --no-cache-dir --break-system-packages magnet2torrent requests natsort
 
       - name: Process Torrent Links & Magnets
@@ -39,9 +39,7 @@ jobs:
               if not name:
                   return "unnamed"
               name = unquote(name)
-              # Remove forbidden filename characters: \ / : * ? " < > |
-              sanitized = re.sub(r'[\\/*?:"<>|]', '_', name)
-              # Remove non-printable control characters
+              sanitized = re.sub(r'[\\/*?:"<>|;]', '_', name)
               sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
               return sanitized.strip('. ') or "unnamed"
 
@@ -100,26 +98,59 @@ jobs:
           asyncio.run(main())
           EOF
 
-      - name: Download Files via libtorrent
+      - name: Configure & Start qBittorrent Daemon
         run: |
-          echo "🚀 Starting libtorrent downloads..."
+          echo "⚙️ Configuring and starting qbittorrent-nox daemon..."
+          mkdir -p ~/.config/qBittorrent
+          DOWNLOAD_DIR="$(pwd)/downloads"
+          
+          cat << EOF > ~/.config/qBittorrent/qBittorrent.conf
+          [General]
+          LegalNotice\Accepted=true
+
+          [Preferences]
+          Downloads\SavePath=${DOWNLOAD_DIR}
+          WebUI\AuthSubnetWhitelist=127.0.0.1/32
+          WebUI\AuthSubnetWhitelistEnabled=true
+          WebUI\Enabled=true
+          WebUI\LocalHostAuth=false
+          WebUI\Port=8080
+          EOF
+
+          qbittorrent-nox --daemon
+          sleep 3
+          curl -s http://127.0.0.1:8080/api/v2/app/version && echo " ✅ qBittorrent daemon ready."
+
+      - name: Download Files via qbittorrent-nox
+        run: |
+          echo "🚀 Processing downloads using qbittorrent-nox API..."
           python3 -u - << 'EOF'
           import os
           import re
           import glob
           import time
           import requests
-          import libtorrent as lt
-          from urllib.parse import urlparse, unquote
+          from urllib.parse import urlparse, unquote, quote
           from natsort import natsorted
+
+          QBIT_API = "http://127.0.0.1:8080/api/v2"
 
           def sanitize_path(name):
               if not name:
                   return "unnamed"
               name = unquote(name)
-              sanitized = re.sub(r'[\\/*?:"<>|]', '_', name)
+              sanitized = re.sub(r'[\\/*?:"<>|;]', '_', name)
               sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
               return sanitized.strip('. ') or "unnamed"
+
+          def format_eta(eta_seconds):
+              if eta_seconds is None or eta_seconds >= 8640000 or eta_seconds <= 0:
+                  return "∞"
+              m, s = divmod(eta_seconds, 60)
+              h, m = divmod(m, 60)
+              if h > 0:
+                  return f"{h}h {m:02d}m {s:02d}s"
+              return f"{m:02d}m {s:02d}s"
 
           def get_best_trackers():
               fallback_trackers = [
@@ -130,9 +161,7 @@ jobs:
                   "udp://open.stealth.si:80/announce",
                   "udp://tracker.tiny-vps.com:6969/announce",
                   "udp://opentracker.i2p.rocks:6969/announce",
-                  "udp://tracker.moeking.me:6969/announce",
-                  "https://tracker.foreverpirates.co:443/announce",
-                  "udp://tracker.cyberia.is:6969/announce"
+                  "udp://tracker.moeking.me:6969/announce"
               ]
               try:
                   url = "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt"
@@ -140,10 +169,9 @@ jobs:
                   if res.status_code == 200:
                       fetched = [line.strip() for line in res.text.splitlines() if line.strip()]
                       if fetched:
-                          print(f"📡 Successfully loaded {len(fetched)} live trackers.", flush=True)
                           return fetched
-              except Exception as e:
-                  print(f"⚠️ Tracker fetch failed ({e}). Using fallback tracker list.", flush=True)
+              except Exception:
+                  pass
               return fallback_trackers
 
           LIVE_TRACKERS = get_best_trackers()
@@ -166,93 +194,122 @@ jobs:
                   print(f"❌ Failed HTTP download ({url}): {e}", flush=True)
                   return None
 
-          def download_with_libtorrent(target, save_dir="downloads", stuck_timeout=60, max_timeout=3600):
-              ses = lt.session({'listen_interfaces': '0.0.0.0:6881'})
-              
-              if target.startswith('magnet:'):
-                  print(f"📥 Adding magnet to libtorrent: {target[:50]}...", flush=True)
-                  params = lt.parse_magnet_uri(target)
-                  params.save_path = save_dir
-                  handle = ses.add_torrent(params)
-              else:
-                  info = lt.torrent_info(target)
-                  params = {
-                      'save_path': save_dir,
-                      'storage_mode': lt.storage_mode_t.storage_mode_sparse,
-                      'ti': info
-                  }
-                  handle = ses.add_torrent(params)
-                  print(f"📥 Starting libtorrent download: {info.name()}", flush=True)
+          def add_torrent_file(filepath):
+              try:
+                  with open(filepath, 'rb') as f:
+                      files = {'torrents': f}
+                      res = requests.post(f"{QBIT_API}/torrents/add", files=files)
+                      return res.status_code == 200
+              except Exception as e:
+                  print(f"⚠️ Error adding torrent file {filepath}: {e}")
+                  return False
 
-              for tracker in LIVE_TRACKERS:
-                  handle.add_tracker({'url': tracker})
+          def add_magnet_link(magnet_url):
+              try:
+                  # Append extra trackers to magnet URL for faster peer discovery
+                  trackers_param = "".join([f"&tr={quote(t, safe='')}" for t in LIVE_TRACKERS])
+                  full_magnet = magnet_url + trackers_param
+                  data = {'urls': full_magnet}
+                  res = requests.post(f"{QBIT_API}/torrents/add", data=data)
+                  return res.status_code == 200
+              except Exception as e:
+                  print(f"⚠️ Error adding magnet {magnet_url[:40]}: {e}")
+                  return False
 
+          def monitor_qbit_downloads(stuck_timeout=60, max_timeout=3600):
               start_time = time.time()
               last_print_time = time.time()
               last_bytes = 0
               last_progress_time = time.time()
+              
+              completed_hashes = set()
 
-              while not handle.status().is_seeding:
-                  s = handle.status()
-                  current_bytes = s.total_done
+              while True:
+                  try:
+                      res = requests.get(f"{QBIT_API}/torrents/info").json()
+                  except Exception as e:
+                      print(f"⚠️ Failed to query qBittorrent API: {e}")
+                      time.sleep(3)
+                      continue
 
-                  if current_bytes > last_bytes:
-                      last_bytes = current_bytes
+                  if not res:
+                      print("🎉 All queued torrents in qBittorrent finished!")
+                      break
+
+                  all_done = True
+                  total_bytes = sum(t.get('completed', 0) for t in res)
+
+                  if total_bytes > last_bytes:
+                      last_bytes = total_bytes
                       last_progress_time = time.time()
 
+                  for t in res:
+                      t_hash = t['hash']
+                      name = t['name']
+                      progress = t['progress'] * 100
+                      dlspeed = t['dlspeed'] / (1024 * 1024)  # MB/s
+                      eta = t.get('eta', 8640000)
+                      num_seeds = t.get('num_seeds', 0)
+                      num_leechs = t.get('num_leechs', 0)
+                      state = t.get('state', 'unknown')
+
+                      # States considered complete in qBittorrent
+                      is_finished = state in ['uploading', 'stalledUP', 'queuedUP', 'pausedUP', 'completed', 'forcedUP'] or progress >= 100.0
+
+                      if is_finished:
+                          if t_hash not in completed_hashes:
+                              print(f"✅ Finished torrent: {name}", flush=True)
+                              completed_hashes.add(t_hash)
+                              # Delete torrent entry from qBittorrent without deleting downloaded files
+                              requests.post(f"{QBIT_API}/torrents/delete", data={'hashes': t_hash, 'deleteFiles': 'false'})
+                      else:
+                          all_done = False
+
+                  if all_done:
+                      break
+
                   if time.time() - last_print_time >= 15:
-                      state_str = ['queued', 'checking', 'downloading metadata', 'downloading', 'finished', 'seeding', 'allocating'][s.state]
-                      print(f"📊 Progress [{handle.name()[:30]}]: {s.progress * 100:.2f}% | "
-                            f"Down: {s.download_rate / 1024:.1f} KB/s | "
-                            f"Peers: {s.num_peers} | State: {state_str}", flush=True)
+                      for t in res:
+                          if t['hash'] not in completed_hashes:
+                              p = t['progress'] * 100
+                              speed = t['dlspeed'] / (1024 * 1024)
+                              eta_str = format_eta(t.get('eta', 8640000))
+                              print(f"📊 Progress [{t['name'][:30]}]: {p:.2f}% | "
+                                    f"Down: {speed:.2f} MB/s | "
+                                    f"ETA: {eta_str} | "
+                                    f"Peers: {t.get('num_leechs', 0)} (Seeds: {t.get('num_seeds', 0)}) | "
+                                    f"State: {t.get('state')}", flush=True)
                       last_print_time = time.time()
 
-                  if current_bytes == 0 and (time.time() - start_time) > stuck_timeout:
-                      print(f"⏱️ Stuck at 0 bytes for {stuck_timeout}s. Aborting.", flush=True)
-                      ses.remove_torrent(handle)
-                      return None
+                  if total_bytes == 0 and (time.time() - start_time) > stuck_timeout:
+                      print(f"⏱️ Stuck at 0 bytes for {stuck_timeout}s. Aborting remaining downloads.", flush=True)
+                      break
 
                   if (time.time() - start_time) > max_timeout:
-                      print(f"⏱️ Max timeout ({max_timeout}s) reached. Aborting.", flush=True)
-                      ses.remove_torrent(handle)
-                      return None
+                      print(f"⏱️ Max timeout ({max_timeout}s) reached. Aborting remaining downloads.", flush=True)
+                      break
 
-                  time.sleep(2)
-
-              print(f"✅ Finished torrent: {handle.name()}", flush=True)
-              name = handle.name()
-              ses.remove_torrent(handle)
-              return name
+                  time.sleep(3)
 
           def main():
               os.makedirs("downloads", exist_ok=True)
               torrent_files = natsorted(glob.glob("torrents/*.torrent"))
-              finished = []
 
               for tf in torrent_files:
-                  res = download_with_libtorrent(tf)
-                  if res:
-                      finished.append(res)
+                  print(f"📥 Adding torrent file to qBittorrent: {os.path.basename(tf)}")
+                  add_torrent_file(tf)
 
               if os.path.exists("direct_links.txt"):
                   with open("direct_links.txt", "r") as f:
                       links = [line.strip() for line in f if line.strip()]
                       for link in links:
                           if link.startswith('magnet:'):
-                              res = download_with_libtorrent(link)
-                              if res:
-                                  finished.append(res)
+                              print(f"📥 Adding magnet link to qBittorrent: {link[:50]}...")
+                              add_magnet_link(link)
                           elif link.startswith('http'):
-                              res = download_http_file(link)
-                              if res:
-                                  finished.append(res)
+                              download_http_file(link)
 
-              print("\n====================")
-              print("🎉 FINISHED DOWNLOADS:")
-              print("====================")
-              for item in finished:
-                  print(f"✅ {item[:80]}")
-              print("====================\n")
+              monitor_qbit_downloads()
 
           if __name__ == "__main__":
               main()
@@ -275,7 +332,6 @@ jobs:
               if not name:
                   return "unnamed"
               name = unquote(name)
-              # Strips illegal chars and curl form field delimiters like ';'
               sanitized = re.sub(r'[\\/*?:"<>|;]', '_', name)
               sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
               return sanitized.strip('. ') or "unnamed"
@@ -292,10 +348,9 @@ jobs:
                   return m.group(1), m.group(2)
               return None, None
 
-          # Dictionary to track pre-sanitized original filenames
           sanitized_names_map = {}
 
-          # 0. Sanitize all raw files & directories on disk, keeping track of original names
+          # 0. Sanitize all raw files & directories on disk, tracking original names
           for r, dirs, files in os.walk(folder, topdown=False):
               for f in files:
                   clean_f = sanitize_path(f)
@@ -320,8 +375,6 @@ jobs:
               os.makedirs(group_dir, exist_ok=True)
               
               log_entries = []
-
-              # Record folder name sanitization if applicable
               orig_folder = original_group_name or group_name
               if orig_folder != clean_group_name:
                   log_entries.append(f"[FOLDER RENAMED]\nOriginal : {orig_folder}\nSanitized: {clean_group_name}\n")
@@ -339,7 +392,6 @@ jobs:
                       clean_filename = os.path.basename(p)
                       orig_filename = sanitized_names_map.get(p, clean_filename)
                       
-                      # Record file name sanitization if applicable
                       if orig_filename != clean_filename:
                           log_entries.append(f"[FILE RENAMED]\nOriginal : {orig_filename}\nSanitized: {clean_filename}\n")
 
@@ -347,7 +399,6 @@ jobs:
                       if p != dst and not os.path.exists(dst):
                           shutil.move(p, dst)
 
-              # Generate log file inside the folder if any sanitization occurred
               if log_entries:
                   log_file_path = os.path.join(group_dir, "name_mapping.txt")
                   with open(log_file_path, "w", encoding="utf-8") as lf:
@@ -358,7 +409,6 @@ jobs:
                       lf.write("\n==================================================\n")
                   print(f"📝 Created sanitization log: {log_file_path}", flush=True)
 
-          # 1. Gather all video files
           all_videos = []
           for r, _, files in os.walk(folder):
               for f in files:
@@ -387,7 +437,6 @@ jobs:
               else:
                   movies.append(vid_path)
 
-          # 2. Process TV series (>3 episodes -> folder named after 1st episode)
           for group_key in natsorted(series_groups.keys()):
               vids = natsorted(series_groups[group_key])
               if len(vids) > 3:
@@ -400,7 +449,6 @@ jobs:
               else:
                   short_series_pool.extend(vids)
 
-          # 3. Process loose series pool
           if len(short_series_pool) > 3:
               current_date = datetime.now().strftime("%Y-%m-%d")
               print(f"📁 Bundling loose series pool ({len(short_series_pool)} vids) into date folder: {current_date}", flush=True)
@@ -408,7 +456,6 @@ jobs:
           else:
               movies.extend(short_series_pool)
 
-          # 4. Move each movie into its own dedicated folder
           for movie_path in natsorted(movies):
               clean_movie_stem = os.path.splitext(os.path.basename(movie_path))[0]
               orig_movie_stem = os.path.splitext(sanitized_names_map.get(movie_path, os.path.basename(movie_path)))[0]
@@ -416,7 +463,6 @@ jobs:
               print(f"🎬 Creating dedicated folder for movie/item: {clean_movie_stem}", flush=True)
               move_files_to_group_dir(clean_movie_stem, [movie_path], folder, original_group_name=orig_movie_stem)
 
-          # 5. Cleanup remaining empty directories
           for r, dirs, files in os.walk(folder, topdown=False):
               if r == folder: continue
               if not os.listdir(r):
@@ -436,7 +482,7 @@ jobs:
           MAX_BYTES = 17 * 1024 * 1024 * 1024  # 17 GB limit
 
           def sanitize_path(name):
-              sanitized = re.sub(r'[\\/*?:"<>|]', '_', name)
+              sanitized = re.sub(r'[\\/*?:"<>|;]', '_', name)
               sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
               return sanitized.strip('. ') or "unnamed"
 
@@ -503,7 +549,7 @@ jobs:
           FOLDER_PATH = 'downloads'
 
           def sanitize_path(name):
-              sanitized = re.sub(r'[\\/*?:"<>|]', '_', name)
+              sanitized = re.sub(r'[\\/*?:"<>|;]', '_', name)
               sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
               return sanitized.strip('. ') or "unnamed"
 
@@ -542,7 +588,7 @@ jobs:
               
               curl_cmd = [
                   "curl", "-X", "POST", UPLOAD_URL,
-                  "-F", f"file=@{file_path}"
+                  "-F", f'file=@"{file_path}"'
               ]
               if GOFILE_TOKEN:
                   curl_cmd.extend(["-H", f"Authorization: Bearer {GOFILE_TOKEN}"])
