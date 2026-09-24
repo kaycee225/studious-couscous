@@ -9,8 +9,7 @@ on:
 jobs:
   download-group-upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+  
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -29,11 +28,22 @@ jobs:
           python3 - << 'EOF'
           import asyncio
           import os
+          import re
           import requests
-          from urllib.parse import urlparse
+          from urllib.parse import urlparse, unquote
           from magnet2torrent import Magnet2Torrent
 
           link_url = "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/ecec22a2-a90a-4452-a6d5-62d7457350ed"
+
+          def sanitize_path(name):
+              if not name:
+                  return "unnamed"
+              name = unquote(name)
+              # Remove forbidden filename characters: \ / : * ? " < > |
+              sanitized = re.sub(r'[\\/*?:"<>|]', '_', name)
+              # Remove non-printable control characters
+              sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
+              return sanitized.strip('. ') or "unnamed"
 
           async def main():
               try:
@@ -52,6 +62,7 @@ jobs:
                               try:
                                   m2t = Magnet2Torrent(link)
                                   filename, torrent_data = await asyncio.wait_for(m2t.retrieve_torrent(), timeout=30)
+                                  filename = sanitize_path(filename)
                                   if not filename.endswith('.torrent'):
                                       filename = f"{filename}.torrent"
                                   torrent_path = os.path.join("torrents", filename)
@@ -66,7 +77,8 @@ jobs:
                                   try:
                                       tor_data = requests.get(link, timeout=15).content
                                       parsed = urlparse(link)
-                                      filename = os.path.basename(parsed.path) or f"download_{i}.torrent"
+                                      raw_fn = os.path.basename(parsed.path) or f"download_{i}.torrent"
+                                      filename = sanitize_path(raw_fn)
                                       if not filename.endswith('.torrent'):
                                           filename = f"{filename}.torrent"
                                       with open(os.path.join('torrents', filename), 'wb') as tf:
@@ -93,12 +105,21 @@ jobs:
           echo "🚀 Starting libtorrent downloads..."
           python3 -u - << 'EOF'
           import os
+          import re
           import glob
           import time
           import requests
           import libtorrent as lt
-          from urllib.parse import urlparse
+          from urllib.parse import urlparse, unquote
           from natsort import natsorted
+
+          def sanitize_path(name):
+              if not name:
+                  return "unnamed"
+              name = unquote(name)
+              sanitized = re.sub(r'[\\/*?:"<>|]', '_', name)
+              sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
+              return sanitized.strip('. ') or "unnamed"
 
           def get_best_trackers():
               fallback_trackers = [
@@ -130,7 +151,8 @@ jobs:
           def download_http_file(url, output_dir="downloads"):
               try:
                   parsed = urlparse(url)
-                  filename = os.path.basename(parsed.path) or "downloaded_file"
+                  raw_filename = os.path.basename(parsed.path) or "downloaded_file"
+                  filename = sanitize_path(raw_filename)
                   filepath = os.path.join(output_dir, filename)
                   print(f"📥 Downloading direct HTTP link: {filename}", flush=True)
                   with requests.get(url, stream=True, timeout=60) as r:
@@ -244,12 +266,41 @@ jobs:
           from datetime import datetime
           from collections import defaultdict
           from natsort import natsorted
+          from urllib.parse import unquote
 
           folder = "downloads"
           video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
 
+          def sanitize_path(name):
+              if not name:
+                  return "unnamed"
+              name = unquote(name)
+              sanitized = re.sub(r'[\\/*?:"<>|]', '_', name)
+              sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
+              return sanitized.strip('. ') or "unnamed"
+
+          def parse_tv_show(name):
+              """Recognizes S01E01, S01, 3x01, 03x01, Season 3 formats."""
+              # Pattern 1: S01, S01E01, S1
+              m = re.search(r'(?i)(?:^(.*?)[.\s_\[\(-]+)?S(\d{1,2})(?:[EX\d\-]|\b)', name)
+              if m:
+                  return m.group(1), m.group(2)
+              
+              # Pattern 2: 3x01, 03x01, 3x1
+              m = re.search(r'(?i)(?:^(.*?)[.\s_\[\(-]+)?(\d{1,2})x\d{1,2}', name)
+              if m:
+                  return m.group(1), m.group(2)
+
+              # Pattern 3: Season 3, Season.03
+              m = re.search(r'(?i)(?:^(.*?)[.\s_\[\(-]+)?Season[.\s_-]*(\d{1,2})', name)
+              if m:
+                  return m.group(1), m.group(2)
+
+              return None, None
+
           def move_files_to_group_dir(group_name, file_paths, base_dir):
-              group_dir = os.path.join(base_dir, group_name)
+              clean_group_name = sanitize_path(group_name)
+              group_dir = os.path.join(base_dir, clean_group_name)
               os.makedirs(group_dir, exist_ok=True)
               
               files_to_move = list(file_paths)
@@ -275,7 +326,6 @@ jobs:
                       all_videos.append(os.path.join(r, f))
 
           all_videos = natsorted(all_videos)
-          series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
           
           series_groups = defaultdict(list)
           movies = []
@@ -284,12 +334,15 @@ jobs:
           for vid_path in all_videos:
               vid_name = os.path.basename(vid_path)
               parent_name = os.path.basename(os.path.dirname(vid_path))
-              match = series_regex.search(vid_name) or series_regex.search(parent_name)
               
-              if match:
-                  raw_title = match.group(1) or "Season"
-                  s_num = match.group(2)
-                  group_key = f"{raw_title.strip('. -_')}_S{s_num}"
+              raw_title, s_num = parse_tv_show(vid_name)
+              if not s_num:
+                  raw_title, s_num = parse_tv_show(parent_name)
+
+              if s_num:
+                  raw_title = raw_title.strip('. -_[]()') if raw_title else "Season"
+                  s_num_formatted = f"{int(s_num):02d}"
+                  group_key = f"{raw_title}_S{s_num_formatted}"
                   series_groups[group_key].append(vid_path)
               else:
                   movies.append(vid_path)
@@ -310,7 +363,6 @@ jobs:
               print(f"📁 Bundling loose series pool ({len(short_series_pool)} vids) into date folder: {current_date}", flush=True)
               move_files_to_group_dir(current_date, short_series_pool, folder)
           else:
-              # If total loose videos <= 3, treat each individually
               movies.extend(short_series_pool)
 
           # 4. Move each movie / loose item into its own dedicated folder with subtitles
@@ -331,11 +383,17 @@ jobs:
           echo "✂️ Checking folder sizes and splitting folders over 17GB..."
           python3 - << 'EOF'
           import os
+          import re
           import shutil
           from natsort import natsorted
 
           downloads_dir = "downloads"
           MAX_BYTES = 17 * 1024 * 1024 * 1024  # 17 GB limit
+
+          def sanitize_path(name):
+              sanitized = re.sub(r'[\\/*?:"<>|]', '_', name)
+              sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
+              return sanitized.strip('. ') or "unnamed"
 
           if os.path.exists(downloads_dir):
               entries = natsorted(os.listdir(downloads_dir))
@@ -366,7 +424,7 @@ jobs:
                                   part_num += 1
                                   current_part_size = 0
                               
-                              part_dir_name = f"{entry}_Part_{part_num}"
+                              part_dir_name = sanitize_path(f"{entry}_Part_{part_num}")
                               part_dir_path = os.path.join(downloads_dir, part_dir_name)
                               os.makedirs(part_dir_path, exist_ok=True)
                               
@@ -387,6 +445,7 @@ jobs:
           echo "📤 Running Parallel Multi-Threaded Uploads to GoFile..."
           python3 - << 'EOF'
           import os
+          import re
           import subprocess
           import requests
           import time
@@ -397,6 +456,11 @@ jobs:
           GOFILE_TOKEN = 'VoTnBsgTAiTqm97X6FmvdmBswsMPl6SG'
           PARENT_FOLDER_ID = '6af360d4-d348-470b-8d25-40e961cb9565'
           FOLDER_PATH = 'downloads'
+
+          def sanitize_path(name):
+              sanitized = re.sub(r'[\\/*?:"<>|]', '_', name)
+              sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
+              return sanitized.strip('. ') or "unnamed"
 
           try:
               srv_res = requests.get("https://api.gofile.io/servers", timeout=10).json()
@@ -411,14 +475,15 @@ jobs:
 
           def create_gofile_folder(folder_name, parent_id=""):
               try:
+                  clean_folder_name = sanitize_path(folder_name)
                   headers = {"Authorization": f"Bearer {GOFILE_TOKEN}"} if GOFILE_TOKEN else {}
-                  data = {"folderName": folder_name}
+                  data = {"folderName": clean_folder_name}
                   if parent_id:
                       data["parentFolderId"] = parent_id
                   res = requests.post("https://api.gofile.io/contents/createFolder", json=data, headers=headers, timeout=15).json()
                   if res.get('status') == 'ok':
                       new_id = res['data']['id']
-                      print(f"📁 Created GoFile Folder: {folder_name} (ID: {new_id})", flush=True)
+                      print(f"📁 Created GoFile Folder: {clean_folder_name} (ID: {new_id})", flush=True)
                       return new_id
               except Exception as e:
                   print(f"⚠️ Failed to create folder {folder_name} on GoFile: {e}", flush=True)
