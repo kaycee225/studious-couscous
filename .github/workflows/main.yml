@@ -1,120 +1,498 @@
-name: Libtorrent & Pixeldrain
+name: Download Torrent and Upload to GoFile
 
 on:
-  push:
-    branches: Webtor
   workflow_dispatch:
+  push:
+    branches:
+      - Webtor
 
 jobs:
-  run:
+  download-group-upload:
     runs-on: ubuntu-latest
-    env:
-      PIXELDRAIN_API_KEY: '0bfe0b11-611d-4bb3-9b4c-36dbaa5a1fd5'
-      FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/3ef2b179-9fb7-4f42-8c42-80f58ce33c23'
-      KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/3ef2b179-9fb7-4f42-8c42-80f58ce33c23'
+    timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Dependencies
-        run: sudo apt update && sudo apt install python3-libtorrent python3-requests curl -y
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Download, Flatten & Upload
+      - name: Install System & Python Dependencies
         run: |
+          echo "📦 Installing libtorrent, curl, and python packages..."
+          sudo apt update -qq
+          sudo apt install -y -qq python3-libtorrent python3 python3-requests python3-pip curl
+          pip3 install --no-cache-dir --break-system-packages magnet2torrent requests natsort
+
+      - name: Process Torrent Links & Magnets
+        run: |
+          echo "🧲 Converting magnets and queuing direct links..."
+          mkdir -p downloads torrents
           python3 - << 'EOF'
-          import libtorrent as lt, time, os, shutil, subprocess, requests
-          from datetime import datetime
+          import asyncio
+          import os
+          import requests
+          from urllib.parse import urlparse
+          from magnet2torrent import Magnet2Torrent
 
-          pd_key = os.environ.get('PIXELDRAIN_API_KEY', '')
-          folder_path = os.environ.get('FOLDER_PATH', 'downloaded_files')
-          link_url = os.environ.get('LINK_FETCH_URL')
-          kill_url = os.environ.get('KILL_SWITCH_URL')
+          link_url = "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/ecec22a2-a90a-4452-a6d5-62d7457350ed"
 
-          os.makedirs(folder_path, exist_ok=True)
-          ses = lt.session({'listen_interfaces': '0.0.0.0:6881'})
-          added_links = set()
-          update_count = 0
+          async def main():
+              try:
+                  ks = requests.get(link_url, timeout=10).text
+                  if "STOP.ALL.TORRENTS" in ks:
+                      print("🛑 Global kill switch active.")
+                      return
+                      
+                  direct_links = []
+                  
+                  for i, link in enumerate(ks.splitlines()):
+                      link = link.strip()
+                      if link and not link.startswith('#') and not link.endswith(' NO'):
+                          if link.startswith('magnet:'):
+                              print(f"📥 Converting magnet: {link[:60]}...", flush=True)
+                              try:
+                                  m2t = Magnet2Torrent(link)
+                                  filename, torrent_data = await asyncio.wait_for(m2t.retrieve_torrent(), timeout=30)
+                                  if not filename.endswith('.torrent'):
+                                      filename = f"{filename}.torrent"
+                                  torrent_path = os.path.join("torrents", filename)
+                                  with open(torrent_path, "wb") as f:
+                                      f.write(torrent_data)
+                                  print(f"✅ Saved torrent: {torrent_path}")
+                              except (asyncio.TimeoutError, TimeoutError, Exception) as e:
+                                  print(f"⚠️ Magnet conversion failed ({e}). Queuing raw magnet for fallback!", flush=True)
+                                  direct_links.append(link)
+                          elif link.startswith('http'):
+                              if link.endswith('.torrent'):
+                                  try:
+                                      tor_data = requests.get(link, timeout=15).content
+                                      parsed = urlparse(link)
+                                      filename = os.path.basename(parsed.path) or f"download_{i}.torrent"
+                                      if not filename.endswith('.torrent'):
+                                          filename = f"{filename}.torrent"
+                                      with open(os.path.join('torrents', filename), 'wb') as tf:
+                                          tf.write(tor_data)
+                                      print(f"✅ Downloaded .torrent file: {filename}")
+                                  except Exception as e:
+                                      print(f"❌ Failed to download torrent file ({e}): {link}")
+                              else:
+                                  direct_links.append(link)
+                                  print(f"🔗 Queued direct HTTP download: {link}")
+                                  
+                  if direct_links:
+                      with open('direct_links.txt', 'w') as f:
+                          f.write('\n'.join(direct_links))
+                          
+              except Exception as e:
+                  print(f"Error processing links: {e}")
 
-          def fmt_eta(sec):
-              if sec is None or sec < 0 or sec >= 8640000: return "∞"
-              m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
-              return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
+          asyncio.run(main())
+          EOF
 
-          while True:
-              update_count += 1
-              timestamp = datetime.now().strftime("%H:%M:%S")
+      - name: Download Files via libtorrent
+        run: |
+          echo "🚀 Starting libtorrent downloads..."
+          python3 -u - << 'EOF'
+          import os
+          import glob
+          import time
+          import requests
+          import libtorrent as lt
+          from urllib.parse import urlparse
+          from natsort import natsorted
 
-              if kill_url:
-                  try:
-                      r = requests.get(kill_url, timeout=5)
-                      if r.status_code == 200:
-                          if "STOP.ALL.TORRENTS" in r.text:
-                              print("\n" + "="*50 + f"\n🛑 [GH-Libtorrent-Pixeldrain] Global kill switch activated! | {timestamp}\n" + "="*50)
-                              break
-                          kill_targets = [l.replace(' NO', '').strip().lower() for l in r.text.splitlines() if l.endswith(' NO') and l.strip()]
-                          if kill_targets:
-                              for h in ses.get_torrents():
-                                  if h.status().has_metadata and any(kt in h.name().lower() for kt in kill_targets if kt):
-                                      ses.remove_torrent(h, 1)
-                  except Exception: pass
+          def get_best_trackers():
+              fallback_trackers = [
+                  "udp://tracker.openbittorrent.com:80/announce",
+                  "udp://tracker.opentrackr.org:1337/announce",
+                  "udp://tracker.torrent.eu.org:451/announce",
+                  "udp://exodus.desync.com:6969/announce",
+                  "udp://open.stealth.si:80/announce",
+                  "udp://tracker.tiny-vps.com:6969/announce",
+                  "udp://opentracker.i2p.rocks:6969/announce",
+                  "udp://tracker.moeking.me:6969/announce",
+                  "https://tracker.foreverpirates.co:443/announce",
+                  "udp://tracker.cyberia.is:6969/announce"
+              ]
+              try:
+                  url = "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt"
+                  res = requests.get(url, timeout=5)
+                  if res.status_code == 200:
+                      fetched = [line.strip() for line in res.text.splitlines() if line.strip()]
+                      if fetched:
+                          print(f"📡 Successfully loaded {len(fetched)} live trackers.", flush=True)
+                          return fetched
+              except Exception as e:
+                  print(f"⚠️ Tracker fetch failed ({e}). Using fallback tracker list.", flush=True)
+              return fallback_trackers
 
-              if link_url:
-                  try:
-                      r = requests.get(link_url, timeout=5)
-                      if r.status_code == 200:
-                          for line in r.text.splitlines():
-                              link = line.strip()
-                              if link and not link.startswith('#') and link not in added_links:
-                                  params = lt.parse_magnet_uri(link)
-                                  params.save_path = os.path.abspath(folder_path)
-                                  ses.add_torrent(params)
-                                  added_links.add(link)
-                  except Exception: pass
+          LIVE_TRACKERS = get_best_trackers()
 
-              torrents = ses.get_torrents()
-              print(f"\n" + "="*50)
-              print(f"🔄 [GH-Libtorrent-Pixeldrain] Progress Update #{update_count} | {timestamp}")
-              print("-"*50)
-              if not torrents:
-                  print("📥 Waiting for active torrents...")
-                  all_done = False
+          def download_http_file(url, output_dir="downloads"):
+              try:
+                  parsed = urlparse(url)
+                  filename = os.path.basename(parsed.path) or "downloaded_file"
+                  filepath = os.path.join(output_dir, filename)
+                  print(f"📥 Downloading direct HTTP link: {filename}", flush=True)
+                  with requests.get(url, stream=True, timeout=60) as r:
+                      r.raise_for_status()
+                      with open(filepath, 'wb') as f:
+                          for chunk in r.iter_content(chunk_size=8192):
+                              f.write(chunk)
+                  print(f"✅ Finished HTTP download: {filename}", flush=True)
+                  return filepath
+              except Exception as e:
+                  print(f"❌ Failed HTTP download ({url}): {e}", flush=True)
+                  return None
+
+          def download_with_libtorrent(target, save_dir="downloads", stuck_timeout=60, max_timeout=3600):
+              ses = lt.session({'listen_interfaces': '0.0.0.0:6881'})
+              
+              if target.startswith('magnet:'):
+                  print(f"📥 Adding magnet to libtorrent: {target[:50]}...", flush=True)
+                  params = lt.parse_magnet_uri(target)
+                  params.save_path = save_dir
+                  handle = ses.add_torrent(params)
               else:
-                  all_done = True
-                  for h in torrents:
-                      s = h.status()
-                      prog = int(s.progress * 100)
-                      speed_mb = s.download_rate / (1024 * 1024)
-                      eta_str = fmt_eta(s.eta if hasattr(s, 'eta') else -1)
-                      name = h.name() if s.has_metadata else "Fetching Metadata..."
-                      print(f"📥 Torrent: {name} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
-                      if not s.is_seeding and s.progress < 1.0: all_done = False
-              print("="*50 + "\n")
+                  info = lt.torrent_info(target)
+                  params = {
+                      'save_path': save_dir,
+                      'storage_mode': lt.storage_mode_t.storage_mode_sparse,
+                      'ti': info
+                  }
+                  handle = ses.add_torrent(params)
+                  print(f"📥 Starting libtorrent download: {info.name()}", flush=True)
 
-              if all_done and torrents: break
-              time.sleep(10)
+              for tracker in LIVE_TRACKERS:
+                  handle.add_tracker({'url': tracker})
 
-          for h in ses.get_torrents():
-              if h.status().progress < 1.0: ses.remove_torrent(h, 1)
-          time.sleep(2)
+              start_time = time.time()
+              last_print_time = time.time()
+              last_bytes = 0
+              last_progress_time = time.time()
 
-          for item in os.listdir(folder_path):
-              item_path = os.path.join(folder_path, item)
-              if os.path.isdir(item_path):
-                  for subroot, _, files in os.walk(item_path):
-                      for file in files:
-                          src = os.path.join(subroot, file)
-                          dst = os.path.join(folder_path, file)
-                          if os.path.exists(dst):
-                              base, ext = os.path.splitext(file)
-                              dst = os.path.join(folder_path, f"{base}_{int(time.time())}{ext}")
-                          shutil.move(src, dst)
-                  shutil.rmtree(item_path, ignore_errors=True)
+              while not handle.status().is_seeding:
+                  s = handle.status()
+                  current_bytes = s.total_done
 
-          for filename in sorted(os.listdir(folder_path)):
-              file_path = os.path.join(folder_path, filename)
-              if os.path.isdir(file_path) or ".!qB" in filename or ".part" in filename: continue
-              cmd = ["curl", "-s", "-X", "PUT", "-T", file_path]
-              if pd_key: cmd.extend(["-u", f":{pd_key}"])
-              cmd.append(f"https://pixeldrain.com/api/file/{filename}")
-              subprocess.run(cmd)
+                  if current_bytes > last_bytes:
+                      last_bytes = current_bytes
+                      last_progress_time = time.time()
+
+                  if time.time() - last_print_time >= 15:
+                      state_str = ['queued', 'checking', 'downloading metadata', 'downloading', 'finished', 'seeding', 'allocating'][s.state]
+                      print(f"📊 Progress [{handle.name()[:30]}]: {s.progress * 100:.2f}% | "
+                            f"Down: {s.download_rate / 1024:.1f} KB/s | "
+                            f"Peers: {s.num_peers} | State: {state_str}", flush=True)
+                      last_print_time = time.time()
+
+                  if current_bytes == 0 and (time.time() - start_time) > stuck_timeout:
+                      print(f"⏱️ Stuck at 0 bytes for {stuck_timeout}s. Aborting.", flush=True)
+                      ses.remove_torrent(handle)
+                      return None
+
+                  if (time.time() - start_time) > max_timeout:
+                      print(f"⏱️ Max timeout ({max_timeout}s) reached. Aborting.", flush=True)
+                      ses.remove_torrent(handle)
+                      return None
+
+                  time.sleep(2)
+
+              print(f"✅ Finished torrent: {handle.name()}", flush=True)
+              name = handle.name()
+              ses.remove_torrent(handle)
+              return name
+
+          def main():
+              os.makedirs("downloads", exist_ok=True)
+              torrent_files = natsorted(glob.glob("torrents/*.torrent"))
+              finished = []
+
+              for tf in torrent_files:
+                  res = download_with_libtorrent(tf)
+                  if res:
+                      finished.append(res)
+
+              if os.path.exists("direct_links.txt"):
+                  with open("direct_links.txt", "r") as f:
+                      links = [line.strip() for line in f if line.strip()]
+                      for link in links:
+                          if link.startswith('magnet:'):
+                              res = download_with_libtorrent(link)
+                              if res:
+                                  finished.append(res)
+                          elif link.startswith('http'):
+                              res = download_http_file(link)
+                              if res:
+                                  finished.append(res)
+
+              print("\n====================")
+              print("🎉 FINISHED DOWNLOADS:")
+              print("====================")
+              for item in finished:
+                  print(f"✅ {item[:80]}")
+              print("====================\n")
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+      - name: Organize Files into Dedicated Folders
+        run: |
+          echo "📂 Organizing all movies and TV shows into dedicated directories..."
+          python3 - << 'EOF'
+          import os, shutil, re
+          from datetime import datetime
+          from collections import defaultdict
+          from natsort import natsorted
+
+          folder = "downloads"
+          video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+
+          def move_files_to_group_dir(group_name, file_paths, base_dir):
+              group_dir = os.path.join(base_dir, group_name)
+              os.makedirs(group_dir, exist_ok=True)
+              
+              files_to_move = list(file_paths)
+              # Include matching subtitle files for each video
+              for p in file_paths:
+                  base_stem = os.path.splitext(p)[0]
+                  for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
+                      sub_file = base_stem + sub_ext
+                      if os.path.exists(sub_file) and sub_file not in files_to_move:
+                          files_to_move.append(sub_file)
+
+              for p in files_to_move:
+                  if os.path.exists(p):
+                      dst = os.path.join(group_dir, os.path.basename(p))
+                      if p != dst and not os.path.exists(dst):
+                          shutil.move(p, dst)
+
+          # 1. Gather all video files
+          all_videos = []
+          for r, _, files in os.walk(folder):
+              for f in files:
+                  if f.lower().endswith(video_ext):
+                      all_videos.append(os.path.join(r, f))
+
+          all_videos = natsorted(all_videos)
+          series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
+          
+          series_groups = defaultdict(list)
+          movies = []
+          short_series_pool = []
+
+          for vid_path in all_videos:
+              vid_name = os.path.basename(vid_path)
+              parent_name = os.path.basename(os.path.dirname(vid_path))
+              match = series_regex.search(vid_name) or series_regex.search(parent_name)
+              
+              if match:
+                  raw_title = match.group(1) or "Season"
+                  s_num = match.group(2)
+                  group_key = f"{raw_title.strip('. -_')}_S{s_num}"
+                  series_groups[group_key].append(vid_path)
+              else:
+                  movies.append(vid_path)
+
+          # 2. Process TV series (>3 episodes -> folder named after 1st episode)
+          for group_key in natsorted(series_groups.keys()):
+              vids = natsorted(series_groups[group_key])
+              if len(vids) > 3:
+                  first_ep_name = os.path.splitext(os.path.basename(vids[0]))[0]
+                  print(f"📁 TV Series (>3 ep) -> Folder named after 1st ep: {first_ep_name}", flush=True)
+                  move_files_to_group_dir(first_ep_name, vids, folder)
+              else:
+                  short_series_pool.extend(vids)
+
+          # 3. Process loose series pool (if total > 3 videos -> folder named after current date)
+          if len(short_series_pool) > 3:
+              current_date = datetime.now().strftime("%Y-%m-%d")
+              print(f"📁 Bundling loose series pool ({len(short_series_pool)} vids) into date folder: {current_date}", flush=True)
+              move_files_to_group_dir(current_date, short_series_pool, folder)
+          else:
+              # If total loose videos <= 3, treat each individually
+              movies.extend(short_series_pool)
+
+          # 4. Move each movie / loose item into its own dedicated folder with subtitles
+          for movie_path in natsorted(movies):
+              movie_stem = os.path.splitext(os.path.basename(movie_path))[0]
+              print(f"🎬 Creating dedicated folder for movie/item: {movie_stem}", flush=True)
+              move_files_to_group_dir(movie_stem, [movie_path], folder)
+
+          # 5. Cleanup remaining empty directories
+          for r, dirs, files in os.walk(folder, topdown=False):
+              if r == folder: continue
+              if not os.listdir(r):
+                  shutil.rmtree(r, ignore_errors=True)
+          EOF
+
+      - name: Split Oversized Folders (17GB Limit)
+        run: |
+          echo "✂️ Checking folder sizes and splitting folders over 17GB..."
+          python3 - << 'EOF'
+          import os
+          import shutil
+          from natsort import natsorted
+
+          downloads_dir = "downloads"
+          MAX_BYTES = 17 * 1024 * 1024 * 1024  # 17 GB limit
+
+          if os.path.exists(downloads_dir):
+              entries = natsorted(os.listdir(downloads_dir))
+              for entry in entries:
+                  entry_path = os.path.join(downloads_dir, entry)
+                  
+                  if os.path.isdir(entry_path):
+                      all_files = []
+                      total_folder_size = 0
+                      
+                      for root, _, files in os.walk(entry_path):
+                          for f in files:
+                              fp = os.path.join(root, f)
+                              sz = os.path.getsize(fp)
+                              all_files.append((fp, sz))
+                              total_folder_size += sz
+
+                      if total_folder_size > MAX_BYTES:
+                          size_gb = total_folder_size / (1024 ** 3)
+                          print(f"📦 Folder '{entry}' is {size_gb:.2f} GB (>17GB). Splitting into parts...", flush=True)
+                          
+                          all_files = natsorted(all_files, key=lambda x: x[0])
+                          part_num = 1
+                          current_part_size = 0
+                          
+                          for fp, sz in all_files:
+                              if current_part_size + sz > MAX_BYTES and current_part_size > 0:
+                                  part_num += 1
+                                  current_part_size = 0
+                              
+                              part_dir_name = f"{entry}_Part_{part_num}"
+                              part_dir_path = os.path.join(downloads_dir, part_dir_name)
+                              os.makedirs(part_dir_path, exist_ok=True)
+                              
+                              rel_path = os.path.relpath(fp, entry_path)
+                              target_fp = os.path.join(part_dir_path, rel_path)
+                              os.makedirs(os.path.dirname(target_fp), exist_ok=True)
+                              
+                              shutil.move(fp, target_fp)
+                              current_part_size += sz
+                              print(f"  └─ Moved to {part_dir_name}: {os.path.basename(fp)}", flush=True)
+                          
+                          shutil.rmtree(entry_path, ignore_errors=True)
+                          print(f"✅ Finished splitting '{entry}' into {part_num} parts.", flush=True)
+          EOF
+
+      - name: Parallel Upload to GoFile
+        run: |
+          echo "📤 Running Parallel Multi-Threaded Uploads to GoFile..."
+          python3 - << 'EOF'
+          import os
+          import subprocess
+          import requests
+          import time
+          import fcntl
+          from concurrent.futures import ThreadPoolExecutor
+          from natsort import natsorted
+
+          GOFILE_TOKEN = 'VoTnBsgTAiTqm97X6FmvdmBswsMPl6SG'
+          PARENT_FOLDER_ID = '6af360d4-d348-470b-8d25-40e961cb9565'
+          FOLDER_PATH = 'downloads'
+
+          try:
+              srv_res = requests.get("https://api.gofile.io/servers", timeout=10).json()
+              if srv_res.get('status') == 'ok' and srv_res.get('data', {}).get('servers'):
+                  SERVER = srv_res['data']['servers'][0]['name']
+                  UPLOAD_URL = f"https://{SERVER}.gofile.io/contents/uploadfile"
+              else:
+                  UPLOAD_URL = "https://store1.gofile.io/contents/uploadfile"
+          except Exception as e:
+              print(f"Failed to fetch GoFile server ({e}), using default endpoint.")
+              UPLOAD_URL = "https://store1.gofile.io/contents/uploadfile"
+
+          def create_gofile_folder(folder_name, parent_id=""):
+              try:
+                  headers = {"Authorization": f"Bearer {GOFILE_TOKEN}"} if GOFILE_TOKEN else {}
+                  data = {"folderName": folder_name}
+                  if parent_id:
+                      data["parentFolderId"] = parent_id
+                  res = requests.post("https://api.gofile.io/contents/createFolder", json=data, headers=headers, timeout=15).json()
+                  if res.get('status') == 'ok':
+                      new_id = res['data']['id']
+                      print(f"📁 Created GoFile Folder: {folder_name} (ID: {new_id})", flush=True)
+                      return new_id
+              except Exception as e:
+                  print(f"⚠️ Failed to create folder {folder_name} on GoFile: {e}", flush=True)
+              return parent_id
+
+          def upload_single_file(item_info):
+              file_path, target_folder_id = item_info
+              filename = os.path.basename(file_path)
+              file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+              print(f"⬆️ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
+              
+              curl_cmd = [
+                  "curl", "-X", "POST", UPLOAD_URL,
+                  "-F", f"file=@{file_path}"
+              ]
+              if GOFILE_TOKEN:
+                  curl_cmd.extend(["-H", f"Authorization: Bearer {GOFILE_TOKEN}"])
+              if target_folder_id:
+                  curl_cmd.extend(["-F", f"folderId={target_folder_id}"])
+                  
+              curl_cmd.extend(["--max-time", "3600"])
+              
+              proc = subprocess.Popen(curl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              
+              fd = proc.stderr.fileno()
+              fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+              fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              
+              last_print_time = time.time()
+              buffer = b""
+              
+              while proc.poll() is None:
+                  try:
+                      chunk = proc.stderr.read(1024)
+                      if chunk:
+                          buffer += chunk
+                          if b'\r' in buffer or b'\n' in buffer:
+                              lines = buffer.replace(b'\r', b'\n').split(b'\n')
+                              buffer = lines[-1]
+                              valid_lines = [L.decode('utf-8', errors='ignore').strip() for L in lines[:-1] if L.strip()]
+                              if valid_lines:
+                                  last_line = valid_lines[-1]
+                                  if time.time() - last_print_time >= 30:
+                                      print(f"📤 Progress [{filename[:25]}]: {last_line}", flush=True)
+                                      last_print_time = time.time()
+                  except Exception:
+                      pass
+                  time.sleep(0.5)
+                  
+              stdout, stderr = proc.communicate()
+              if proc.returncode == 0:
+                  print(f"✅ Finished uploading {filename}: {stdout.decode('utf-8', errors='ignore').strip()}", flush=True)
+              else:
+                  err_msg = stderr.decode('utf-8', errors='ignore').strip() if stderr else 'Unknown error'
+                  print(f"❌ Curl Error uploading {filename}: {err_msg}", flush=True)
+
+          if os.path.exists(FOLDER_PATH):
+              upload_tasks = []
+              
+              for entry in natsorted(os.listdir(FOLDER_PATH)):
+                  full_path = os.path.join(FOLDER_PATH, entry)
+                  
+                  if os.path.isdir(full_path):
+                      gofile_subfolder_id = create_gofile_folder(entry, PARENT_FOLDER_ID)
+                      for root, _, files in os.walk(full_path):
+                          for f in files:
+                              if not any(ext in f for ext in [".!qB", ".part", ".aria2"]):
+                                  upload_tasks.append((os.path.join(root, f), gofile_subfolder_id))
+                  elif os.path.isfile(full_path):
+                      if not any(ext in entry for ext in [".!qB", ".part", ".aria2"]):
+                          upload_tasks.append((full_path, PARENT_FOLDER_ID))
+              
+              if upload_tasks:
+                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_tasks)} files...", flush=True)
+                  with ThreadPoolExecutor(max_workers=4) as executor:
+                      executor.map(upload_single_file, upload_tasks)
           EOF
