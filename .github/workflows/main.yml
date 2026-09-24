@@ -275,36 +275,58 @@ jobs:
               if not name:
                   return "unnamed"
               name = unquote(name)
-              sanitized = re.sub(r'[\\/*?:"<>|]', '_', name)
+              # Strips illegal chars and curl form field delimiters like ';'
+              sanitized = re.sub(r'[\\/*?:"<>|;]', '_', name)
               sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
               return sanitized.strip('. ') or "unnamed"
 
           def parse_tv_show(name):
-              """Recognizes S01E01, S01, 3x01, 03x01, Season 3 formats."""
-              # Pattern 1: S01, S01E01, S1
               m = re.search(r'(?i)(?:^(.*?)[.\s_\[\(-]+)?S(\d{1,2})(?:[EX\d\-]|\b)', name)
               if m:
                   return m.group(1), m.group(2)
-              
-              # Pattern 2: 3x01, 03x01, 3x1
               m = re.search(r'(?i)(?:^(.*?)[.\s_\[\(-]+)?(\d{1,2})x\d{1,2}', name)
               if m:
                   return m.group(1), m.group(2)
-
-              # Pattern 3: Season 3, Season.03
               m = re.search(r'(?i)(?:^(.*?)[.\s_\[\(-]+)?Season[.\s_-]*(\d{1,2})', name)
               if m:
                   return m.group(1), m.group(2)
-
               return None, None
 
-          def move_files_to_group_dir(group_name, file_paths, base_dir):
+          # Dictionary to track pre-sanitized original filenames
+          sanitized_names_map = {}
+
+          # 0. Sanitize all raw files & directories on disk, keeping track of original names
+          for r, dirs, files in os.walk(folder, topdown=False):
+              for f in files:
+                  clean_f = sanitize_path(f)
+                  if clean_f != f:
+                      old_p = os.path.join(r, f)
+                      new_p = os.path.join(r, clean_f)
+                      if not os.path.exists(new_p):
+                          shutil.move(old_p, new_p)
+                      sanitized_names_map[new_p] = f
+              for d in dirs:
+                  clean_d = sanitize_path(d)
+                  if clean_d != d:
+                      old_p = os.path.join(r, d)
+                      new_p = os.path.join(r, clean_d)
+                      if not os.path.exists(new_p):
+                          shutil.move(old_p, new_p)
+                      sanitized_names_map[new_p] = d
+
+          def move_files_to_group_dir(group_name, file_paths, base_dir, original_group_name=None):
               clean_group_name = sanitize_path(group_name)
               group_dir = os.path.join(base_dir, clean_group_name)
               os.makedirs(group_dir, exist_ok=True)
               
+              log_entries = []
+
+              # Record folder name sanitization if applicable
+              orig_folder = original_group_name or group_name
+              if orig_folder != clean_group_name:
+                  log_entries.append(f"[FOLDER RENAMED]\nOriginal : {orig_folder}\nSanitized: {clean_group_name}\n")
+
               files_to_move = list(file_paths)
-              # Include matching subtitle files for each video
               for p in file_paths:
                   base_stem = os.path.splitext(p)[0]
                   for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
@@ -314,9 +336,27 @@ jobs:
 
               for p in files_to_move:
                   if os.path.exists(p):
-                      dst = os.path.join(group_dir, os.path.basename(p))
+                      clean_filename = os.path.basename(p)
+                      orig_filename = sanitized_names_map.get(p, clean_filename)
+                      
+                      # Record file name sanitization if applicable
+                      if orig_filename != clean_filename:
+                          log_entries.append(f"[FILE RENAMED]\nOriginal : {orig_filename}\nSanitized: {clean_filename}\n")
+
+                      dst = os.path.join(group_dir, clean_filename)
                       if p != dst and not os.path.exists(dst):
                           shutil.move(p, dst)
+
+              # Generate log file inside the folder if any sanitization occurred
+              if log_entries:
+                  log_file_path = os.path.join(group_dir, "name_mapping.txt")
+                  with open(log_file_path, "w", encoding="utf-8") as lf:
+                      lf.write("==================================================\n")
+                      lf.write("             NAME SANITIZATION LOG                \n")
+                      lf.write("==================================================\n\n")
+                      lf.write("\n".join(log_entries))
+                      lf.write("\n==================================================\n")
+                  print(f"📝 Created sanitization log: {log_file_path}", flush=True)
 
           # 1. Gather all video files
           all_videos = []
@@ -351,13 +391,16 @@ jobs:
           for group_key in natsorted(series_groups.keys()):
               vids = natsorted(series_groups[group_key])
               if len(vids) > 3:
-                  first_ep_name = os.path.splitext(os.path.basename(vids[0]))[0]
-                  print(f"📁 TV Series (>3 ep) -> Folder named after 1st ep: {first_ep_name}", flush=True)
-                  move_files_to_group_dir(first_ep_name, vids, folder)
+                  first_ep_path = vids[0]
+                  clean_first_ep_name = os.path.splitext(os.path.basename(first_ep_path))[0]
+                  orig_first_ep_name = os.path.splitext(sanitized_names_map.get(first_ep_path, os.path.basename(first_ep_path)))[0]
+                  
+                  print(f"📁 TV Series (>3 ep) -> Folder named after 1st ep: {clean_first_ep_name}", flush=True)
+                  move_files_to_group_dir(clean_first_ep_name, vids, folder, original_group_name=orig_first_ep_name)
               else:
                   short_series_pool.extend(vids)
 
-          # 3. Process loose series pool (if total > 3 videos -> folder named after current date)
+          # 3. Process loose series pool
           if len(short_series_pool) > 3:
               current_date = datetime.now().strftime("%Y-%m-%d")
               print(f"📁 Bundling loose series pool ({len(short_series_pool)} vids) into date folder: {current_date}", flush=True)
@@ -365,11 +408,13 @@ jobs:
           else:
               movies.extend(short_series_pool)
 
-          # 4. Move each movie / loose item into its own dedicated folder with subtitles
+          # 4. Move each movie into its own dedicated folder
           for movie_path in natsorted(movies):
-              movie_stem = os.path.splitext(os.path.basename(movie_path))[0]
-              print(f"🎬 Creating dedicated folder for movie/item: {movie_stem}", flush=True)
-              move_files_to_group_dir(movie_stem, [movie_path], folder)
+              clean_movie_stem = os.path.splitext(os.path.basename(movie_path))[0]
+              orig_movie_stem = os.path.splitext(sanitized_names_map.get(movie_path, os.path.basename(movie_path)))[0]
+              
+              print(f"🎬 Creating dedicated folder for movie/item: {clean_movie_stem}", flush=True)
+              move_files_to_group_dir(clean_movie_stem, [movie_path], folder, original_group_name=orig_movie_stem)
 
           # 5. Cleanup remaining empty directories
           for r, dirs, files in os.walk(folder, topdown=False):
