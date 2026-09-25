@@ -36,20 +36,26 @@ jobs:
           WebUI\AuthSubnetWhitelist=127.0.0.1/32
           WebUI\AuthSubnetWhitelistEnabled=true
           Queueing\QueueEnabled=false
-          Queueing\MaxActiveDownloads=50
+          Queueing\MaxActiveDownloads=100
           Queueing\MaxActiveTorrents=100
-          Bittorrent\MaxConnecs=2000
-          Bittorrent\MaxConnecsPerTorrent=500
-          Bittorrent\MaxUploads=100
-          Bittorrent\MaxUploadsPerTorrent=20
+          Session\Port=443
+          Bittorrent\UtpEnabled=false
+          Bittorrent\BTProtocol=TCP
+          Bittorrent\MaxConnecs=4000
+          Bittorrent\MaxConnecsPerTorrent=1000
+          Bittorrent\MaxUploads=10
+          Bittorrent\MaxUploadsPerTorrent=2
           Bittorrent\DHT=true
           Bittorrent\PeX=true
-          Bittorrent\LSD=true
-          Bittorrent\Encryption=0
-          Downloads\DiskWriteCacheSize=512
-          Advanced\AsyncIOThreads=16
+          Bittorrent\LSD=false
+          Bittorrent\Encryption=1
+          Downloads\DiskWriteCacheSize=1024
+          Advanced\AsyncIOThreads=32
+          Network\SendBufferLowWatermark=1024
+          Network\SendBufferWatermark=2048
+          Network\SendBufferWatermarkFactor=200
           Bittorrent\AddTrackers=true
-          Bittorrent\TrackersList="udp://tracker.opentrackr.org:1337/announce\nudp://open.tracker.cl:1337/announce\nudp://opentracker.i2p.rocks:6969/announce\nhttps://opentracker.i2p.rocks:443/announce\nudp://open.demonii.com:1337/announce\nudp://tracker.openbittorrent.com:80/announce\nudp://exodus.desync.com:6969/announce\nudp://tracker.torrent.eu.org:451/announce"
+          Bittorrent\TrackersList="udp://tracker.opentrackr.org:1337/announce\nhttp://tracker.opentrackr.org:1337/announce\nudp://open.tracker.cl:1337/announce\nudp://opentracker.i2p.rocks:6969/announce\nhttps://opentracker.i2p.rocks:443/announce\nhttp://open.demonii.com:1337/announce\nudp://tracker.openbittorrent.com:80/announce\nhttp://tracker.openbittorrent.com:80/announce\nudp://exodus.desync.com:6969/announce\nudp://tracker.torrent.eu.org:451/announce"
           EOF
 
           qbittorrent-nox -d
@@ -67,14 +73,15 @@ jobs:
           tracker_injected_hashes = set()
           update_count = 0
 
-          # High-availability trackers to inject into magnet/torrent downloads
           fallback_trackers = [
               "udp://tracker.opentrackr.org:1337/announce",
+              "http://tracker.opentrackr.org:1337/announce",
               "udp://open.tracker.cl:1337/announce",
               "udp://opentracker.i2p.rocks:6969/announce",
               "https://opentracker.i2p.rocks:443/announce",
-              "udp://open.demonii.com:1337/announce",
+              "http://open.demonii.com:1337/announce",
               "udp://tracker.openbittorrent.com:80/announce",
+              "http://tracker.openbittorrent.com:80/announce",
               "udp://exodus.desync.com:6969/announce",
               "udp://tracker.torrent.eu.org:451/announce"
           ]
@@ -126,7 +133,6 @@ jobs:
               try:
                   res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
 
-                  # Inject public trackers into newly detected torrents
                   for t in res:
                       thash = t.get('hash')
                       if thash and thash not in tracker_injected_hashes:
