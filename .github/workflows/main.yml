@@ -35,9 +35,21 @@ jobs:
           WebUI\LocalHostAuth=false
           WebUI\AuthSubnetWhitelist=127.0.0.1/32
           WebUI\AuthSubnetWhitelistEnabled=true
-          Queueing\QueueEnabled=true
-          Queueing\MaxActiveDownloads=10
-          Queueing\MaxActiveTorrents=25
+          Queueing\QueueEnabled=false
+          Queueing\MaxActiveDownloads=50
+          Queueing\MaxActiveTorrents=100
+          Bittorrent\MaxConnecs=2000
+          Bittorrent\MaxConnecsPerTorrent=500
+          Bittorrent\MaxUploads=100
+          Bittorrent\MaxUploadsPerTorrent=20
+          Bittorrent\DHT=true
+          Bittorrent\PeX=true
+          Bittorrent\LSD=true
+          Bittorrent\Encryption=0
+          Downloads\DiskWriteCacheSize=512
+          Advanced\AsyncIOThreads=16
+          Bittorrent\AddTrackers=true
+          Bittorrent\TrackersList="udp://tracker.opentrackr.org:1337/announce\nudp://open.tracker.cl:1337/announce\nudp://opentracker.i2p.rocks:6969/announce\nhttps://opentracker.i2p.rocks:443/announce\nudp://open.demonii.com:1337/announce\nudp://tracker.openbittorrent.com:80/announce\nudp://exodus.desync.com:6969/announce\nudp://tracker.torrent.eu.org:451/announce"
           EOF
 
           qbittorrent-nox -d
@@ -52,7 +64,31 @@ jobs:
           folder_path = 'downloaded_files'
           absolute_save_path = os.path.abspath(folder_path)
           added_links = set()
+          tracker_injected_hashes = set()
           update_count = 0
+
+          # High-availability trackers to inject into magnet/torrent downloads
+          fallback_trackers = [
+              "udp://tracker.opentrackr.org:1337/announce",
+              "udp://open.tracker.cl:1337/announce",
+              "udp://opentracker.i2p.rocks:6969/announce",
+              "https://opentracker.i2p.rocks:443/announce",
+              "udp://open.demonii.com:1337/announce",
+              "udp://tracker.openbittorrent.com:80/announce",
+              "udp://exodus.desync.com:6969/announce",
+              "udp://tracker.torrent.eu.org:451/announce"
+          ]
+
+          def get_public_trackers():
+              try:
+                  res = requests.get("https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt", timeout=3)
+                  if res.status_code == 200 and res.text.strip():
+                      return [t.strip() for t in res.text.splitlines() if t.strip()]
+              except Exception:
+                  pass
+              return fallback_trackers
+
+          trackers_to_add = "\n".join(get_public_trackers())
 
           def fmt_eta(sec):
               if sec is None or sec < 0 or sec >= 8640000: return "∞"
@@ -89,6 +125,16 @@ jobs:
 
               try:
                   res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+
+                  # Inject public trackers into newly detected torrents
+                  for t in res:
+                      thash = t.get('hash')
+                      if thash and thash not in tracker_injected_hashes:
+                          try:
+                              requests.post('http://127.0.0.1:8080/api/v2/torrents/addTrackers', data={'hash': thash, 'urls': trackers_to_add})
+                              tracker_injected_hashes.add(thash)
+                          except Exception: pass
+
                   print(f"\n" + "="*50)
                   print(f"🔄 [GH-qBittorrent-Filemirage] Progress Update #{update_count} | {timestamp}")
                   print("-"*50)
@@ -104,7 +150,24 @@ jobs:
                           print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
                           if prog < 100: all_done = False
                   print("="*50 + "\n")
-                  if all_done and res: break
+
+                  if all_done and res:
+                      print("="*60)
+                      print("🎉 ALL DOWNLOADS COMPLETED SUCCESSFULLY!")
+                      print("="*60)
+                      total_bytes = 0
+                      for idx, t in enumerate(res, 1):
+                          sz = t.get('total_size', t.get('size', 0))
+                          total_bytes += sz
+                          sz_mb = sz / (1024 * 1024)
+                          print(f"  {idx}. 📦 {t['name']}")
+                          print(f"     ├── Size: {sz_mb:.2f} MB ({sz:,} bytes)")
+                          print(f"     ├── Hash: {t.get('hash', 'N/A')}")
+                          print(f"     └── Save Path: {t.get('save_path', absolute_save_path)}")
+                      print("-" * 60)
+                      print(f"📊 Summary: {len(res)} Torrent(s) | Total Data: {total_bytes / (1024*1024*1024):.2f} GB")
+                      print("="*60 + "\n")
+                      break
               except Exception: pass
               time.sleep(10)
           EOF
@@ -125,10 +188,8 @@ jobs:
           max_bytes = 7000 * 1024 * 1024  # Max 7000 MB (~7 GB) per independent .zip file
 
           def create_independent_zips(group_name, file_paths, output_dir, max_bytes_limit=max_bytes):
-              # Naturally sort files first
               file_paths = natsorted(list(dict.fromkeys(file_paths)))
               
-              # Pair video files with their subtitle files
               file_groups = []
               processed = set()
               
@@ -145,7 +206,6 @@ jobs:
                           processed.add(sub_file)
                   file_groups.append(grp)
 
-              # Partition into batches within max_bytes_limit
               chunks = []
               curr_chunk = []
               curr_size = 0
@@ -162,7 +222,6 @@ jobs:
               if curr_chunk:
                   chunks.append(curr_chunk)
 
-              # Compress each chunk into an independent .zip archive
               for idx, chunk in enumerate(chunks, 1):
                   zip_filename = f"{group_name}.zip" if len(chunks) == 1 else f"{group_name}_part{idx:02d}.zip"
                   zip_filepath = os.path.abspath(os.path.join(output_dir, zip_filename))
@@ -183,7 +242,6 @@ jobs:
                   shutil.rmtree(temp_dir, ignore_errors=True)
 
           if os.path.exists(folder):
-              # 1. Process folders containing > 3 videos
               for item in natsorted(os.listdir(folder)):
                   item_path = os.path.join(folder, item)
                   if os.path.isdir(item_path):
@@ -200,7 +258,6 @@ jobs:
                           create_independent_zips(item, all_folder_files, folder, max_bytes)
                           shutil.rmtree(item_path, ignore_errors=True)
 
-              # 2. Find remaining video files
               all_videos = []
               for r, _, files in os.walk(folder):
                   for f in files:
@@ -226,7 +283,6 @@ jobs:
                   else:
                       unmatched_videos.append(vid_path)
 
-              # 3. Zip series groups (>3 videos) into independent .zip files
               for group_key in natsorted(series_groups.keys()):
                   vids = natsorted(series_groups[group_key])
                   if len(vids) > 3:
@@ -235,13 +291,11 @@ jobs:
                   else:
                       unmatched_videos.extend(vids)
 
-              # 4. Zip remaining unmatched videos (>3 videos) into independent .zip files
               unmatched_videos = natsorted(unmatched_videos)
               if len(unmatched_videos) > 3:
                   first_stem = os.path.splitext(os.path.basename(unmatched_videos[0]))[0]
                   create_independent_zips(f"Batch_{first_stem}", unmatched_videos, folder, max_bytes)
 
-              # 5. Clean up loose files
               for r, dirs, files in os.walk(folder, topdown=False):
                   if r == folder: continue
                   for f in natsorted(files):
