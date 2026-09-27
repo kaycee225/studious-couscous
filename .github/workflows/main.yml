@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - kaycee225-patch-1
+      - kaycee225-patch-3
 
 jobs:
   download-group-upload:
@@ -51,43 +51,57 @@ jobs:
                       return
                       
                   direct_links = []
+                  valid_links = [line.strip() for line in ks.splitlines() if line.strip() and not line.startswith('#') and not line.endswith(' NO')]
                   
-                  for i, link in enumerate(ks.splitlines()):
-                      link = link.strip()
-                      if link and not link.startswith('#') and not link.endswith(' NO'):
-                          if link.startswith('magnet:'):
-                              print(f"📥 Converting magnet: {link[:60]}...", flush=True)
+                  skip_next = False
+                  
+                  for i, link in enumerate(valid_links):
+                      if skip_next:
+                          print(f"⏭️ Skipping link (previous was successful): {link[:60]}...", flush=True)
+                          skip_next = False
+                          continue
+                          
+                      success = False
+                      
+                      if link.startswith('magnet:'):
+                          print(f"📥 Converting magnet: {link[:60]}...", flush=True)
+                          try:
+                              m2t = Magnet2Torrent(link)
+                              filename, torrent_data = await asyncio.wait_for(m2t.retrieve_torrent(), timeout=30)
+                              filename = sanitize_path(filename)
+                              if not filename.endswith('.torrent'):
+                                  filename = f"{filename}.torrent"
+                              torrent_path = os.path.join("torrents", filename)
+                              with open(torrent_path, "wb") as f:
+                                  f.write(torrent_data)
+                              print(f"✅ Saved torrent: {torrent_path}")
+                              success = True
+                          except (asyncio.TimeoutError, TimeoutError, Exception) as e:
+                              print(f"⚠️ Magnet conversion failed ({e}). Queuing raw magnet for fallback!", flush=True)
+                              direct_links.append(link)
+                      elif link.startswith('http'):
+                          if link.endswith('.torrent'):
                               try:
-                                  m2t = Magnet2Torrent(link)
-                                  filename, torrent_data = await asyncio.wait_for(m2t.retrieve_torrent(), timeout=30)
-                                  filename = sanitize_path(filename)
+                                  tor_data = requests.get(link, timeout=15).content
+                                  parsed = urlparse(link)
+                                  raw_fn = os.path.basename(parsed.path) or f"download_{i}.torrent"
+                                  filename = sanitize_path(raw_fn)
                                   if not filename.endswith('.torrent'):
                                       filename = f"{filename}.torrent"
-                                  torrent_path = os.path.join("torrents", filename)
-                                  with open(torrent_path, "wb") as f:
-                                      f.write(torrent_data)
-                                  print(f"✅ Saved torrent: {torrent_path}")
-                              except (asyncio.TimeoutError, TimeoutError, Exception) as e:
-                                  print(f"⚠️ Magnet conversion failed ({e}). Queuing raw magnet for fallback!", flush=True)
-                                  direct_links.append(link)
-                          elif link.startswith('http'):
-                              if link.endswith('.torrent'):
-                                  try:
-                                      tor_data = requests.get(link, timeout=15).content
-                                      parsed = urlparse(link)
-                                      raw_fn = os.path.basename(parsed.path) or f"download_{i}.torrent"
-                                      filename = sanitize_path(raw_fn)
-                                      if not filename.endswith('.torrent'):
-                                          filename = f"{filename}.torrent"
-                                      with open(os.path.join('torrents', filename), 'wb') as tf:
-                                          tf.write(tor_data)
-                                      print(f"✅ Downloaded .torrent file: {filename}")
-                                  except Exception as e:
-                                      print(f"❌ Failed to download torrent file ({e}): {link}")
-                              else:
-                                  direct_links.append(link)
-                                  print(f"🔗 Queued direct HTTP download: {link}")
-                                  
+                                  with open(os.path.join('torrents', filename), 'wb') as tf:
+                                      tf.write(tor_data)
+                                  print(f"✅ Downloaded .torrent file: {filename}")
+                                  success = True
+                              except Exception as e:
+                                  print(f"❌ Failed to download torrent file ({e}): {link}")
+                          else:
+                              direct_links.append(link)
+                              print(f"🔗 Queued direct HTTP download: {link}")
+                              success = True
+                              
+                      if success:
+                          skip_next = True
+                          
                   if direct_links:
                       with open('direct_links.txt', 'w') as f:
                           f.write('\n'.join(direct_links))
@@ -110,6 +124,11 @@ jobs:
 
           [Preferences]
           Downloads\SavePath=${DOWNLOAD_DIR}
+          Queueing\QueueingEnabled=true
+          Queueing\MaxActiveDownloads=10
+          Queueing\MaxActiveTorrents=10
+          BitTorrent\MaxActiveDownloads=10
+          BitTorrent\MaxActiveTorrents=10
           WebUI\AuthSubnetWhitelist=127.0.0.1/32
           WebUI\AuthSubnetWhitelistEnabled=true
           WebUI\Enabled=true
