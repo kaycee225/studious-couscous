@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - kaycee225-patch-3
+      - kaycee225-patch-4
 
 jobs:
   download-group-upload:
