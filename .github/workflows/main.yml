@@ -252,10 +252,9 @@ jobs:
               title = re.sub(r'\b(1080p|720p|2160p|4k|bluray|webrip|web-dl|hdrip|brrip|cam|ts|x264|x265|hevc|remux)\b.*', '', title)
               return re.sub(r'[^a-z0-9 ]+', '', title).strip()
 
-          def monitor_qbit_downloads(stuck_timeout=60, max_timeout=3600):
+          def monitor_qbit_downloads(max_timeout=3600):
               start_time = time.time()
               last_print_time = time.time()
-              last_bytes = 0
               
               completed_hashes = set()
               finished_competing_keys = set()
@@ -274,10 +273,6 @@ jobs:
                       break
 
                   all_done = True
-                  total_bytes = sum(t.get('completed', 0) for t in res)
-
-                  if total_bytes > last_bytes:
-                      last_bytes = total_bytes
 
                   for t in res:
                       t_hash = t['hash']
@@ -324,11 +319,6 @@ jobs:
                                 f"Peers: {t.get('num_leechs', 0)} (Seeds: {t.get('num_seeds', 0)}) | "
                                 f"State: {t.get('state')}", flush=True)
                       last_print_time = time.time()
-
-                  if total_bytes == 0 and (time.time() - start_time) > stuck_timeout:
-                      if active_res:
-                          print(f"⏱️ Stuck at 0 bytes for {stuck_timeout}s. Aborting remaining downloads.", flush=True)
-                      break
 
                   if (time.time() - start_time) > max_timeout:
                       print(f"⏱️ Max timeout ({max_timeout}s) reached. Aborting remaining downloads.", flush=True)
@@ -635,7 +625,7 @@ jobs:
                       print(f"📁 Created GoFile Folder: {clean_folder_name} (ID: {new_id})", flush=True)
                       return new_id
               except Exception as e:
-                  print(f"⚠️️ Failed to create folder {folder_name} on GoFile: {e}", flush=True)
+                  print(f"⚠ Failed to create folder {folder_name} on GoFile: {e}", flush=True)
               return parent_id
 
           def upload_single_file(item_info):
