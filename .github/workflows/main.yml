@@ -12,8 +12,8 @@ jobs:
     env:
       FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
       FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/820a8437-85ed-4543-b789-de53a44f31a6'
-      KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/820a8437-85ed-4543-b789-de53a44f31a6'
+      LINK_FETCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
+      KILL_SWITCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
 
     steps:
       - uses: actions/checkout@v4
@@ -47,8 +47,8 @@ jobs:
           import requests, time, os
           from datetime import datetime
 
-          link_url = 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
-          kill_url = 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
+          link_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
+          kill_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
           folder_path = 'downloaded_files'
           absolute_save_path = os.path.abspath(folder_path)
           added_links = set()
@@ -251,7 +251,7 @@ jobs:
           def upload_single_file(file_path):
               filename = os.path.basename(file_path)
               file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"⬆️ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
+              print(f"⬆️️ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
               
               curl_cmd = [
                   "curl", "-X", "POST",
@@ -267,7 +267,7 @@ jobs:
               fl = fcntl.fcntl(fd, fcntl.F_GETFL)
               fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
               
-              last_print_time = time.time()
+              last_print_time = 0
               buffer = b""
               
               while proc.poll() is None:
