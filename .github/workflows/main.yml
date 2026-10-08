@@ -653,9 +653,10 @@ jobs:
                       print(f"❌ Failed to get upload server for {filename}: {res}", flush=True)
                       return
 
-                  # Added -H "Expect:" to prevent the Perl CGI script from miscalculating the file size
+                  # --http1.1 forces a plain Content-Length request so the CGI computes size correctly
                   curl_cmd = [
                       "curl", "-#", "-k",
+                      "--http1.1",
                       "-H", "Expect:",
                       "-F", f"sess_id={sess_id}",
                       "-F", "utype=prem",
