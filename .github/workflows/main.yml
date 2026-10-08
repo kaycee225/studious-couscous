@@ -647,7 +647,6 @@ jobs:
 
               try:
                   url = f"https://theuser.cloud/api/upload/server?key={API_KEY}"
-                  # Added verify=False to bypass SSL check for the API request
                   res = requests.get(url, timeout=10, verify=False).json()
                   
                   upload_url = res.get("result") or res.get("server")
@@ -657,20 +656,31 @@ jobs:
                       print(f"❌ Failed to get upload server for {filename}: {res}", flush=True)
                       return
 
-                  # Added '-k' to bypass SSL certificate verification in curl
+                  # Added upload_type=file to fix the server's filesize calculation bug
                   curl_cmd = [
                       "curl", "-#", "-k",
                       "-F", f"sess_id={sess_id}",
                       "-F", "utype=prem",
+                      "-F", "upload_type=file", 
                       "-F", f"file_0=@{file_path}",
                       upload_url
                   ]
 
-                  process = subprocess.run(curl_cmd)
-                  if process.returncode == 0:
-                      print(f"\n✅ Finished uploading: {filename}", flush=True)
+                  # Capture stdout to read the server response, leave stderr for the progress bar
+                  process = subprocess.run(curl_cmd, stdout=subprocess.PIPE, text=True)
+                  
+                  response_text = process.stdout.strip()
+
+                  # Check if curl succeeded AND the server didn't return an error string
+                  if process.returncode == 0 and "ERROR:" not in response_text:
+                      print(f"\n✅ Finished uploading: {filename}")
+                      print(f"🔗 Server Response: {response_text}", flush=True)
                   else:
-                      print(f"\n❌ Upload failed for {filename} (curl exit code: {process.returncode})", flush=True)
+                      print(f"\n❌ Upload failed for {filename}")
+                      if response_text:
+                          print(f"⚠️ Server returned: {response_text}", flush=True)
+                      else:
+                          print(f"⚠️ curl exit code: {process.returncode}", flush=True)
 
               except Exception as e:
                   print(f"\n❌ Error during upload of {filename}: {e}", flush=True)
