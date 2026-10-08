@@ -574,37 +574,39 @@ jobs:
         env:
           FILEDITCH_TOKEN: ${{ secrets.FILEDITCH_TOKEN }}
         run: |
-          echo "📤 Running Parallel Multi-Threaded Raw PUT Uploads to FileDitch..."
+          echo "📤 Running Parallel Multi-Threaded Multipart POST Uploads to FileDitch..."
           python3 - << 'EOF'
           import os
           import json
           import requests
-          from urllib.parse import quote
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
           FILEDITCH_TOKEN = os.getenv('FILEDITCH_TOKEN', 'w87mru-4cvchd-6hjyp6-ubaexa-bwckex-sjbjhq-65s4xq-jkj24y')
           FOLDER_PATH = 'downloads'
+          UPLOAD_URL = 'https://up1.fileditch.com/upload.php'
 
           def upload_single_file(file_path):
               filename = os.path.basename(file_path)
               file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
               print(f"⬆️ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
               
-              encoded_filename = quote(filename)
-              upload_url = f"https://new.fileditch.com/upload.php?filename={encoded_filename}"
-              
               headers = {
-                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                  "Accept": "application/json"
               }
-              if FILEDITCH_TOKEN:
-                  headers["Authorization"] = f"Bearer {FILEDITCH_TOKEN}"
 
               try:
                   with open(file_path, "rb") as f:
-                      response = requests.put(
-                          upload_url,
-                          data=f,
+                      files = {'files[]': (filename, f)}
+                      data = {}
+                      if FILEDITCH_TOKEN:
+                          data['token'] = FILEDITCH_TOKEN
+
+                      response = requests.post(
+                          UPLOAD_URL,
+                          files=files,
+                          data=data,
                           headers=headers,
                           timeout=21600
                       )
@@ -613,7 +615,8 @@ jobs:
                       try:
                           res = response.json()
                           if res.get('success'):
-                              file_url = res.get('url', 'N/A')
+                              files_info = res.get('files', [])
+                              file_url = files_info[0].get('url', 'N/A') if files_info else 'N/A'
                               print(f"✅ Finished uploading {filename} | Link: {file_url}", flush=True)
                           else:
                               err_msg = res.get('error', response.text)
@@ -634,7 +637,7 @@ jobs:
                           upload_tasks.append(os.path.join(root, f))
               
               if upload_tasks:
-                  print(f"🚀 Launching 4 parallel raw PUT upload workers for {len(upload_tasks)} files...", flush=True)
+                  print(f"🚀 Launching 4 parallel POST upload workers for {len(upload_tasks)} files...", flush=True)
                   with ThreadPoolExecutor(max_workers=4) as executor:
                       executor.map(upload_single_file, upload_tasks)
           EOF
