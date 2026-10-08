@@ -570,84 +570,129 @@ jobs:
                           print(f"✅ Finished splitting '{entry}' into {part_num} parts.", flush=True)
           EOF
 
-      - name: Parallel Upload to FileDitch
+      - name: Parallel Upload to FileDitch (with GoFile Fallback)
         env:
           FILEDITCH_TOKEN: ${{ secrets.FILEDITCH_TOKEN }}
         run: |
-          echo "📤 Running Parallel Raw PUT / Multipart Uploads to FileDitch..."
+          echo "📤 Running Parallel Uploads using System Curl (FileDitch + GoFile Fallback)..."
           python3 - << 'EOF'
           import os
-          import requests
+          import json
+          import subprocess
           from concurrent.futures import ThreadPoolExecutor
+          from urllib.parse import quote
           from natsort import natsorted
 
           FILEDITCH_TOKEN = os.getenv('FILEDITCH_TOKEN', 'w87mru-4cvchd-6hjyp6-ubaexa-bwckex-sjbjhq-65s4xq-jkj24y')
           FOLDER_PATH = 'downloads'
-          UPLOAD_URL = 'https://new.fileditch.com/upload.php'
+          FILEDITCH_URL = 'https://new.fileditch.com/upload.php'
+
+          def get_gofile_server():
+              try:
+                  cmd = ['curl', '-s', 'https://api.gofile.io/servers']
+                  res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                  data = json.loads(res.stdout)
+                  if data.get('status') == 'ok':
+                      servers = data.get('data', {}).get('servers', [])
+                      if servers:
+                          return servers[0].get('name')
+              except Exception:
+                  pass
+              return 'store1'
+
+          GOFILE_SERVER = get_gofile_server()
+
+          def upload_to_gofile(file_path):
+              filename = os.path.basename(file_path)
+              print(f"🔄 Retrying upload for {filename} via GoFile fallback...", flush=True)
+              upload_url = f"https://{GOFILE_SERVER}.gofile.io/contents/uploadfile"
+              cmd = [
+                  'curl', '-s',
+                  '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                  '-F', f'file=@{file_path}',
+                  upload_url
+              ]
+              try:
+                  res = subprocess.run(cmd, capture_output=True, text=True, timeout=21600)
+                  if res.returncode == 0:
+                      data = json.loads(res.stdout)
+                      if data.get('status') == 'ok':
+                          download_page = data.get('data', {}).get('downloadPage', 'N/A')
+                          print(f"✅ Finished uploading {filename} to GoFile | Link: {download_page}", flush=True)
+                          return True
+              except Exception as e:
+                  print(f"❌ GoFile upload exception for {filename}: {e}", flush=True)
+              return False
 
           def upload_single_file(file_path):
               filename = os.path.basename(file_path)
               file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
               print(f"⬆️ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
-              
-              headers = {
-                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-              }
-              if FILEDITCH_TOKEN:
-                  headers["Authorization"] = f"Bearer {FILEDITCH_TOKEN}"
 
-              params = {"filename": filename}
-              if FILEDITCH_TOKEN:
-                  params["token"] = FILEDITCH_TOKEN
+              encoded_fn = quote(filename)
+              file_ditch_put_url = f"{FILEDITCH_URL}?filename={encoded_fn}"
 
-              # Method 1: Raw PUT Upload (Fastest)
+              # Attempt 1: Raw PUT via system curl
+              cmd_put = [
+                  'curl', '-s', '-S',
+                  '--retry', '3',
+                  '--retry-delay', '2',
+                  '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                  '-T', file_path,
+                  file_ditch_put_url
+              ]
+              if FILEDITCH_TOKEN:
+                  cmd_put.extend(['-H', f'Authorization: Bearer {FILEDITCH_TOKEN}'])
+
               try:
-                  with open(file_path, "rb") as f:
-                      response = requests.put(
-                          UPLOAD_URL,
-                          params=params,
-                          data=f,
-                          headers=headers,
-                          timeout=21600
-                      )
+                  res = subprocess.run(cmd_put, capture_output=True, text=True, timeout=21600)
+                  if res.returncode == 0 and res.stdout:
+                      try:
+                          data = json.loads(res.stdout)
+                          if data.get('url') or data.get('success'):
+                              url = data.get('url') or data.get('files', [{}])[0].get('url', 'N/A')
+                              print(f"✅ Finished uploading {filename} to FileDitch | Link: {url}", flush=True)
+                              return
+                      except json.JSONDecodeError:
+                          if "http" in res.stdout.lower():
+                              print(f"✅ Finished uploading {filename} to FileDitch: {res.stdout.strip()}", flush=True)
+                              return
 
-                  if response.status_code == 200:
-                      res = response.json()
-                      file_url = res.get("url") or (res.get("files", [{}])[0].get("url") if res.get("files") else "N/A")
-                      print(f"✅ Finished uploading {filename} | Link: {file_url}", flush=True)
-                      return
+                  # Attempt 2: Multipart POST via system curl
+                  cmd_post = [
+                      'curl', '-s', '-S',
+                      '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                      '-F', f'file=@{file_path}',
+                      FILEDITCH_URL
+                  ]
+                  if FILEDITCH_TOKEN:
+                      cmd_post.extend(['-F', f'token={FILEDITCH_TOKEN}'])
 
-                  # Method 2: Fallback Multipart POST (-F "file=@yourfile")
-                  print(f"⚠️ PUT request returned status {response.status_code}. Retrying with Multipart POST...", flush=True)
-                  with open(file_path, "rb") as f:
-                      files = {"file": (filename, f)}
-                      data = {"token": FILEDITCH_TOKEN} if FILEDITCH_TOKEN else {}
-                      response = requests.post(
-                          UPLOAD_URL,
-                          files=files,
-                          data=data,
-                          headers=headers,
-                          timeout=21600
-                      )
-
-                  if response.status_code == 200:
-                      res = response.json()
-                      file_url = res.get("url") or (res.get("files", [{}])[0].get("url") if res.get("files") else "N/A")
-                      print(f"✅ Finished uploading {filename} | Link: {file_url}", flush=True)
-                  else:
-                      print(f"❌ HTTP {response.status_code} Error uploading {filename}: {response.text.strip()}", flush=True)
+                  res = subprocess.run(cmd_post, capture_output=True, text=True, timeout=21600)
+                  if res.returncode == 0 and res.stdout:
+                      try:
+                          data = json.loads(res.stdout)
+                          if data.get('url') or data.get('success'):
+                              url = data.get('url') or data.get('files', [{}])[0].get('url', 'N/A')
+                              print(f"✅ Finished uploading {filename} to FileDitch | Link: {url}", flush=True)
+                              return
+                      except json.JSONDecodeError:
+                          pass
 
               except Exception as e:
-                  print(f"❌ Exception uploading {filename}: {e}", flush=True)
+                  print(f"⚠️ FileDitch upload failed for {filename}: {e}", flush=True)
+
+              # Fallback to GoFile if FileDitch returns 403 or drops connection
+              if not upload_to_gofile(file_path):
+                  print(f"❌ All upload attempts failed for {filename}", flush=True)
 
           if os.path.exists(FOLDER_PATH):
               upload_tasks = []
-              
               for root, _, files in os.walk(FOLDER_PATH):
                   for f in natsorted(files):
                       if not any(f.endswith(ext) for ext in [".!qB", ".part", ".aria2"]):
                           upload_tasks.append(os.path.join(root, f))
-              
+
               if upload_tasks:
                   print(f"🚀 Launching 4 parallel upload workers for {len(upload_tasks)} files...", flush=True)
                   with ThreadPoolExecutor(max_workers=4) as executor:
