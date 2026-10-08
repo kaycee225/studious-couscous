@@ -637,7 +637,7 @@ jobs:
               size_mb = os.path.getsize(file_path) / (1024 * 1024)
               print(f"\n⬆️ Uploading to theuser.cloud: {filename} ({size_mb:.2f} MB)", flush=True)
 
-              if not API_KEY or API_KEY == "306g86ptg8aaxzin54o":
+              if not API_KEY or API_KEY == "YOUR_API_KEY_HERE":
                   print("⚠️ API_KEY is not set. Please replace 'YOUR_API_KEY_HERE' with your actual key.", flush=True)
                   return
 
