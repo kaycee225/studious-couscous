@@ -149,7 +149,7 @@ jobs:
           from natsort import natsorted
 
           QBIT_API = "http://127.0.0.1:8080/api/v2"
-          LINK_URL = os.getenv("LINK_URL", "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/eb711bc9-9eab-4a10-b985-bf2f27bc2d58")
+          LINK_URL = os.getenv("LINK_URL", "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/ecec22a2-a90a-4452-a6d5-62d7457350ed")
 
           processed_links = set()
           stop_checker_event = threading.Event()
