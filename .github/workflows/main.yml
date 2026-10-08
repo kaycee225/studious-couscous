@@ -626,8 +626,12 @@ jobs:
           import os
           import requests
           import subprocess
+          import urllib3
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
+
+          # Suppress InsecureRequestWarning from verify=False
+          urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
           API_KEY = "306g86ptg8aaxzin54o"
           ignored_exts = ('.nfo', '.txt', '.exe', '.url')
@@ -643,7 +647,8 @@ jobs:
 
               try:
                   url = f"https://theuser.cloud/api/upload/server?key={API_KEY}"
-                  res = requests.get(url, timeout=10).json()
+                  # Added verify=False to bypass SSL check for the API request
+                  res = requests.get(url, timeout=10, verify=False).json()
                   
                   upload_url = res.get("result") or res.get("server")
                   sess_id = res.get("sess_id", "")
@@ -652,8 +657,9 @@ jobs:
                       print(f"❌ Failed to get upload server for {filename}: {res}", flush=True)
                       return
 
+                  # Added '-k' to bypass SSL certificate verification in curl
                   curl_cmd = [
-                      "curl", "-#",
+                      "curl", "-#", "-k",
                       "-F", f"sess_id={sess_id}",
                       "-F", "utype=prem",
                       "-F", f"file_0=@{file_path}",
