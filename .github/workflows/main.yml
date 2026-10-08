@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - kaycee225-patch-5
+      - kaycee225-patch-4
 
 jobs:
   download-group-upload:
@@ -571,18 +571,19 @@ jobs:
           EOF
 
       - name: Parallel Upload to FileDitch
+        env:
+          FILEDITCH_TOKEN: ${{ secrets.FILEDITCH_TOKEN }}
         run: |
-          echo "📤 Running Parallel Multi-Threaded Uploads to FileDitch..."
+          echo "📤 Running Parallel Multi-Threaded Raw PUT Uploads to FileDitch..."
           python3 - << 'EOF'
           import os
           import json
-          import subprocess
-          import time
+          import requests
+          from urllib.parse import quote
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          FILEDITCH_TOKEN = 'w87mru-4cvchd-6hjyp6-ubaexa-bwckex-sjbjhq-65s4xq-jkj24y'  # Optional FileDitch bearer login token
-          UPLOAD_URL = "https://new.fileditch.com/upload.php"
+          FILEDITCH_TOKEN = os.getenv('FILEDITCH_TOKEN', 'w87mru-4cvchd-6hjyp6-ubaexa-bwckex-sjbjhq-65s4xq-jkj24y')
           FOLDER_PATH = 'downloads'
 
           def upload_single_file(file_path):
@@ -590,34 +591,39 @@ jobs:
               file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
               print(f"⬆️ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
               
-              curl_cmd = [
-                  "curl", "-s", "-X", "POST",
-                  "-F", f"file=@{file_path}",
-                  UPLOAD_URL
-              ]
+              encoded_filename = quote(filename)
+              upload_url = f"https://new.fileditch.com/upload.php?filename={encoded_filename}"
+              
+              headers = {
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+              }
               if FILEDITCH_TOKEN:
-                  curl_cmd.extend(["-H", f"Authorization: Bearer {FILEDITCH_TOKEN}"])
+                  headers["Authorization"] = f"Bearer {FILEDITCH_TOKEN}"
+
+              try:
+                  with open(file_path, "rb") as f:
+                      response = requests.put(
+                          upload_url,
+                          data=f,
+                          headers=headers,
+                          timeout=21600
+                      )
                   
-              curl_cmd.extend(["--max-time", "21600"])  # 6-hour max runtime cutoff for multipart requests
-              
-              proc = subprocess.Popen(curl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-              stdout, stderr = proc.communicate()
-              
-              if proc.returncode == 0:
-                  out_str = stdout.decode('utf-8', errors='ignore').strip()
-                  try:
-                      res = json.loads(out_str)
-                      if res.get('success'):
-                          file_url = res.get('url', 'N/A')
-                          print(f"✅ Finished uploading {filename} | Link: {file_url}", flush=True)
-                      else:
-                          err_msg = res.get('error', out_str)
-                          print(f"❌ FileDitch Error uploading {filename}: {err_msg}", flush=True)
-                  except Exception:
-                      print(f"✅ Finished uploading {filename}: {out_str}", flush=True)
-              else:
-                  err_msg = stderr.decode('utf-8', errors='ignore').strip() if stderr else 'Unknown error'
-                  print(f"❌ Curl Error uploading {filename}: {err_msg}", flush=True)
+                  if response.status_code == 200:
+                      try:
+                          res = response.json()
+                          if res.get('success'):
+                              file_url = res.get('url', 'N/A')
+                              print(f"✅ Finished uploading {filename} | Link: {file_url}", flush=True)
+                          else:
+                              err_msg = res.get('error', response.text)
+                              print(f"❌ FileDitch Error uploading {filename}: {err_msg}", flush=True)
+                      except Exception:
+                          print(f"✅ Finished uploading {filename}: {response.text.strip()}", flush=True)
+                  else:
+                      print(f"❌ HTTP {response.status_code} Error uploading {filename}: {response.text.strip()}", flush=True)
+              except Exception as e:
+                  print(f"❌ Exception uploading {filename}: {e}", flush=True)
 
           if os.path.exists(FOLDER_PATH):
               upload_tasks = []
@@ -628,7 +634,7 @@ jobs:
                           upload_tasks.append(os.path.join(root, f))
               
               if upload_tasks:
-                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_tasks)} files...", flush=True)
+                  print(f"🚀 Launching 4 parallel raw PUT upload workers for {len(upload_tasks)} files...", flush=True)
                   with ThreadPoolExecutor(max_workers=4) as executor:
                       executor.map(upload_single_file, upload_tasks)
           EOF
