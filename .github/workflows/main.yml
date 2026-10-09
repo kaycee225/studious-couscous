@@ -429,28 +429,6 @@ jobs:
               sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
               return sanitized.strip('. ') or "unnamed"
 
-          def normalize_title(title):
-              if not title:
-                  return ""
-              # Remove apostrophes / quotes
-              t = re.sub(r"['’\`\"]", "", title)
-              # Replace dots, underscores, dashes with single spaces
-              t = re.sub(r'[._\-]+', ' ', t)
-              # Lowercase and trim whitespace
-              return re.sub(r'\s+', ' ', t).strip().lower()
-
-          def parse_tv_show(name):
-              m = re.search(r'(?i)(?:^(.*?)[.\s_\[\(-]+)?S(\d{1,2})(?:[EX\d\-]|\b)', name)
-              if m:
-                  return m.group(1), m.group(2)
-              m = re.search(r'(?i)(?:^(.*?)[.\s_\[\(-]+)?(\d{1,2})x\d{1,2}', name)
-              if m:
-                  return m.group(1), m.group(2)
-              m = re.search(r'(?i)(?:^(.*?)[.\s_\[\(-]+)?Season[.\s_-]*(\d{1,2})', name)
-              if m:
-                  return m.group(1), m.group(2)
-              return None, None
-
           sanitized_names_map = {}
 
           for r, dirs, files in os.walk(folder, topdown=False):
@@ -518,9 +496,7 @@ jobs:
                       full_path = os.path.join(r, f)
                       parent_folder_vids[r].append(full_path)
 
-          series_groups = defaultdict(list)
           movies = []
-          short_series_pool = []
 
           for parent_dir, vids in parent_folder_vids.items():
               rel_parent = os.path.relpath(parent_dir, folder)
@@ -528,40 +504,7 @@ jobs:
                   print(f"📁 Preserving existing subfolder structure with {len(vids)} videos: {rel_parent}", flush=True)
                   continue
 
-              for vid_path in vids:
-                  vid_name = os.path.basename(vid_path)
-                  parent_name = os.path.basename(os.path.dirname(vid_path))
-                  
-                  raw_title, s_num = parse_tv_show(vid_name)
-                  if not s_num:
-                      raw_title, s_num = parse_tv_show(parent_name)
-
-                  if s_num:
-                      norm_title = normalize_title(raw_title) if raw_title else "season"
-                      s_num_formatted = f"{int(s_num):02d}"
-                      group_key = f"{norm_title}_s{s_num_formatted}"
-                      series_groups[group_key].append(vid_path)
-                  else:
-                      movies.append(vid_path)
-
-          for group_key in natsorted(series_groups.keys()):
-              vids = natsorted(series_groups[group_key])
-              if len(vids) > 3:
-                  first_ep_path = vids[0]
-                  clean_first_ep_name = os.path.splitext(os.path.basename(first_ep_path))[0]
-                  orig_first_ep_name = os.path.splitext(sanitized_names_map.get(first_ep_path, os.path.basename(first_ep_path)))[0]
-                  
-                  print(f"📁 Smart Grouping: TV Series (>3 ep) -> Folder named after 1st ep: {clean_first_ep_name}", flush=True)
-                  move_files_to_group_dir(clean_first_ep_name, vids, folder, original_group_name=orig_first_ep_name)
-              else:
-                  short_series_pool.extend(vids)
-
-          if len(short_series_pool) > 3:
-              current_date = datetime.now().strftime("%Y-%m-%d")
-              print(f"📁 Bundling loose series pool ({len(short_series_pool)} vids) into date folder: {current_date}", flush=True)
-              move_files_to_group_dir(current_date, short_series_pool, folder)
-          else:
-              movies.extend(short_series_pool)
+              movies.extend(vids)
 
           for movie_path in natsorted(movies):
               clean_movie_stem = os.path.splitext(os.path.basename(movie_path))[0]
@@ -685,7 +628,7 @@ jobs:
               else:
                   upload_url = f"https://w.buzzheavier.com/{encoded_filename}"
 
-              curl_cmd = ["curl", "-#o", "-", "-T", file_path]
+              curl_cmd = ["curl", "-g", "-#o", "-", "-T", file_path]
               if BUZZHEAVIER_ACCOUNT_ID:
                   curl_cmd.extend(["-H", f"Authorization: Bearer {BUZZHEAVIER_ACCOUNT_ID}"])
               curl_cmd.append(upload_url)
