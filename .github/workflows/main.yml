@@ -1,10 +1,10 @@
-name: Download Torrent and Upload to theuser.cloud
+name: Download Torrent and Upload to Buzzheavier
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - kaycee225-patch-4
+      - kaycee225-patch-5
 
 jobs:
   download-group-upload:
@@ -432,8 +432,11 @@ jobs:
           def normalize_title(title):
               if not title:
                   return ""
+              # Remove apostrophes / quotes
               t = re.sub(r"['’\`\"]", "", title)
+              # Replace dots, underscores, dashes with single spaces
               t = re.sub(r'[._\-]+', ' ', t)
+              # Lowercase and trim whitespace
               return re.sub(r'\s+', ' ', t).strip().lower()
 
           def parse_tv_show(name):
@@ -517,6 +520,7 @@ jobs:
 
           series_groups = defaultdict(list)
           movies = []
+          short_series_pool = []
 
           for parent_dir, vids in parent_folder_vids.items():
               rel_parent = os.path.relpath(parent_dir, folder)
@@ -542,13 +546,28 @@ jobs:
 
           for group_key in natsorted(series_groups.keys()):
               vids = natsorted(series_groups[group_key])
-              movies.extend(vids)
+              if len(vids) > 3:
+                  first_ep_path = vids[0]
+                  clean_first_ep_name = os.path.splitext(os.path.basename(first_ep_path))[0]
+                  orig_first_ep_name = os.path.splitext(sanitized_names_map.get(first_ep_path, os.path.basename(first_ep_path)))[0]
+                  
+                  print(f"📁 Smart Grouping: TV Series (>3 ep) -> Folder named after 1st ep: {clean_first_ep_name}", flush=True)
+                  move_files_to_group_dir(clean_first_ep_name, vids, folder, original_group_name=orig_first_ep_name)
+              else:
+                  short_series_pool.extend(vids)
+
+          if len(short_series_pool) > 3:
+              current_date = datetime.now().strftime("%Y-%m-%d")
+              print(f"📁 Bundling loose series pool ({len(short_series_pool)} vids) into date folder: {current_date}", flush=True)
+              move_files_to_group_dir(current_date, short_series_pool, folder)
+          else:
+              movies.extend(short_series_pool)
 
           for movie_path in natsorted(movies):
               clean_movie_stem = os.path.splitext(os.path.basename(movie_path))[0]
               orig_movie_stem = os.path.splitext(sanitized_names_map.get(movie_path, os.path.basename(movie_path)))[0]
               
-              print(f"🎬 Creating dedicated folder for item: {clean_movie_stem}", flush=True)
+              print(f"🎬 Creating dedicated folder for movie/item: {clean_movie_stem}", flush=True)
               move_files_to_group_dir(clean_movie_stem, [movie_path], folder, original_group_name=orig_movie_stem)
 
           for r, dirs, files in os.walk(folder, topdown=False):
@@ -619,57 +638,67 @@ jobs:
                           print(f"✅ Finished splitting '{entry}' into {part_num} parts.", flush=True)
           EOF
 
-      - name: Parallel Upload to theuser.cloud
+      - name: Parallel Upload to Buzzheavier
+        env:
+          BUZZHEAVIER_ACCOUNT_ID: ${{ secrets.BUZZHEAVIER_ACCOUNT_ID }}
+          BUZZHEAVIER_TOKEN: ${{ secrets.BUZZHEAVIER_TOKEN }}
+          BUZZHEAVIER_FOLDER_ID: ${{ secrets.BUZZHEAVIER_FOLDER_ID }}
         run: |
-          echo "📤 Running Uploads to theuser.cloud..."
+          echo "📤 Running Uploads to Buzzheavier..."
           python3 - << 'EOF'
           import os
           import requests
           import subprocess
+          from urllib.parse import quote
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          API_KEY = "306g86ptg8aaxzin54o"
+          BUZZHEAVIER_ACCOUNT_ID = os.getenv("BUZZHEAVIER_ACCOUNT_ID") or os.getenv("BUZZHEAVIER_TOKEN") or "FINS3KA5OL68CPW5MEYD"
+          BUZZHEAVIER_FOLDER_ID = os.getenv("BUZZHEAVIER_FOLDER_ID") or "roj8pv25ry0k"
           ignored_exts = ('.nfo', '.txt', '.exe', '.url')
 
-          def upload_single_file(file_path):
+          def get_buzzheavier_root_id():
+              if BUZZHEAVIER_FOLDER_ID and BUZZHEAVIER_FOLDER_ID != "YOUR_DIRECTORY_ID_HERE":
+                  return BUZZHEAVIER_FOLDER_ID
+              if not BUZZHEAVIER_ACCOUNT_ID:
+                  return ""
+              try:
+                  url = "https://buzzheavier.com/api/fs"
+                  headers = {"Authorization": f"Bearer {BUZZHEAVIER_ACCOUNT_ID}"}
+                  res = requests.get(url, headers=headers, timeout=10).json()
+                  if "id" in res:
+                      return res["id"]
+                  elif isinstance(res.get("data"), dict) and "id" in res["data"]:
+                      return res["data"]["id"]
+              except Exception as e:
+                  print(f"⚠️ Failed fetching Buzzheavier root directory: {e}", flush=True)
+              return ""
+
+          def upload_single_file(file_path, folder_id):
               filename = os.path.basename(file_path)
               size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"\n⬆️ Uploading to theuser.cloud: {filename} ({size_mb:.2f} MB)", flush=True)
+              print(f"\n⬆️ Uploading to Buzzheavier: {filename} ({size_mb:.2f} MB)", flush=True)
 
-              if not API_KEY or API_KEY == "306g86ptg8aaxzin54o":
-                  print("⚠️ API_KEY is not set. Please replace 'YOUR_API_KEY_HERE' with your actual key.", flush=True)
-                  return
+              encoded_filename = quote(filename)
+              if folder_id:
+                  upload_url = f"https://w.buzzheavier.com/{folder_id}/{encoded_filename}"
+              else:
+                  upload_url = f"https://w.buzzheavier.com/{encoded_filename}"
 
-              try:
-                  url = f"https://theuser.cloud/api/upload/server?key={API_KEY}"
-                  res = requests.get(url, timeout=10).json()
-                  
-                  upload_url = res.get("result") or res.get("server")
-                  sess_id = res.get("sess_id", "")
+              curl_cmd = ["curl", "-#o", "-", "-T", file_path]
+              if BUZZHEAVIER_ACCOUNT_ID:
+                  curl_cmd.extend(["-H", f"Authorization: Bearer {BUZZHEAVIER_ACCOUNT_ID}"])
+              curl_cmd.append(upload_url)
 
-                  if not upload_url:
-                      print(f"❌ Failed to get upload server for {filename}: {res}", flush=True)
-                      return
-
-                  curl_cmd = [
-                      "curl", "-#",
-                      "-F", f"sess_id={sess_id}",
-                      "-F", "utype=prem",
-                      "-F", f"file_0=@{file_path}",
-                      upload_url
-                  ]
-
-                  process = subprocess.run(curl_cmd)
-                  if process.returncode == 0:
-                      print(f"\n✅ Finished uploading: {filename}", flush=True)
-                  else:
-                      print(f"\n❌ Upload failed for {filename} (curl exit code: {process.returncode})", flush=True)
-
-              except Exception as e:
-                  print(f"\n❌ Error during upload of {filename}: {e}", flush=True)
+              res = subprocess.run(curl_cmd)
+              if res.returncode == 0:
+                  print(f"\n✅ Finished uploading: {filename}", flush=True)
+              else:
+                  print(f"\n❌ Upload failed for {filename} (curl exit code: {res.returncode})", flush=True)
 
           def run_uploads():
+              root_folder_id = get_buzzheavier_root_id()
+
               base_dir = 'downloads'
               if not os.path.exists(base_dir):
                   return
@@ -686,7 +715,7 @@ jobs:
               upload_queue = natsorted(upload_queue)
               if upload_queue:
                   with ThreadPoolExecutor(max_workers=2) as executor:
-                      executor.map(upload_single_file, upload_queue)
+                      executor.map(lambda f: upload_single_file(f, root_folder_id), upload_queue)
 
           if __name__ == "__main__":
               run_uploads()
