@@ -106,7 +106,7 @@ jobs:
                   print("="*50 + "\n")
                   if all_done and res: break
               except Exception: pass
-              time.sleep(10)
+              time.sleep(20)
           EOF
 
           pkill qbittorrent-nox || true
@@ -197,7 +197,9 @@ jobs:
               if match:
                   raw_title = match.group(1) or "Season"
                   s_num = match.group(2)
-                  group_key = f"{raw_title.strip('. -_').lower()}_S{s_num}"
+                  clean_title = re.sub(r"['’]", "", raw_title)
+                  clean_title = re.sub(r"[\W_]+", " ", clean_title).strip().lower()
+                  group_key = f"{clean_title}_S{s_num}"
                   series_groups[group_key].append(vid_path)
               else:
                   unmatched_videos.append(vid_path)
@@ -207,14 +209,6 @@ jobs:
               if len(vids) > 3:
                   first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
                   create_7z_group(first_stem, vids, folder, max_bytes)
-              else:
-                  unmatched_videos.extend(vids)
-
-          unmatched_videos = natsorted(unmatched_videos)
-
-          if len(unmatched_videos) > 3:
-              first_stem = os.path.splitext(os.path.basename(unmatched_videos[0]))[0]
-              create_7z_group(f"Batch_{first_stem}", unmatched_videos, folder, max_bytes)
 
           for r, dirs, files in os.walk(folder, topdown=False):
               if r == folder: continue
@@ -251,7 +245,7 @@ jobs:
           def upload_single_file(file_path):
               filename = os.path.basename(file_path)
               file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"⬆️️ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
+              print(f"⬆ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
               
               curl_cmd = [
                   "curl", "-X", "POST",
