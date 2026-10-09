@@ -659,7 +659,7 @@ jobs:
                       "--http1.1",
                       "-H", "Expect:",
                       "-F", f"sess_id={sess_id}",
-                      "-F", "utype=prem",
+                      "-F", "utype=reg",
                       "-F", "upload_type=file", 
                       "-F", f"file_0=@{file_path}",
                       upload_url
