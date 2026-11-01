@@ -1,8 +1,8 @@
-name: qBittorrent & Filester
+name: qBittorrent, Test File & Filester
 
 on:
   push:
-    branches: iew
+    branches: kaycee225-patch-7
     
   workflow_dispatch:
 
@@ -22,9 +22,14 @@ jobs:
           sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests python3-pip -y
           sudo python3 -m pip install --no-cache-dir --break-system-packages natsort
 
-      - name: Download with qBittorrent & Boxed Progress
+      - name: Create 200MB Test File
         run: |
           mkdir -p "$FOLDER_PATH"
+          echo "Generating 200MB test file for upload verification..."
+          dd if=/dev/urandom of="$FOLDER_PATH/test_upload_file.mp4" bs=1M count=200 status=progress
+
+      - name: Download with qBittorrent & Standard Progress
+        run: |
           touch added_links.txt
           mkdir -p ~/.config/qBittorrent
           cat << 'EOF' > ~/.config/qBittorrent/qBittorrent.conf
@@ -56,7 +61,8 @@ jobs:
 
           def fmt_eta(sec):
               if sec is None or sec < 0 or sec >= 8640000: return "∞"
-              m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
+              m, s = divmod(int(sec), 60)
+              h, m = divmod(m, 60)
               return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
 
           while True:
@@ -67,7 +73,7 @@ jobs:
                   try:
                       ks = requests.get(kill_url, timeout=5).text
                       if "STOP.ALL.TORRENTS" in ks:
-                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Filester] Global kill switch activated! | {timestamp}\n" + "="*50)
+                          print(f"🛑 [GH-qBittorrent-Filester] Global kill switch activated! | {timestamp}")
                           break
                       targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
                       if targets:
@@ -75,7 +81,8 @@ jobs:
                           for t in res:
                               if any(tg in t['name'].lower() for tg in targets if tg):
                                   requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={'hashes': t['hash'], 'deleteFiles': 'true'})
-                  except Exception: pass
+                  except Exception:
+                      pass
 
               if link_url:
                   try:
@@ -85,13 +92,12 @@ jobs:
                           if link and not link.startswith('#') and link not in added_links:
                               requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': absolute_save_path})
                               added_links.add(link)
-                  except Exception: pass
+                  except Exception:
+                      pass
 
               try:
                   res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
-                  print(f"\n" + "="*50)
                   print(f"🔄 [GH-qBittorrent-Filester] Progress Update #{update_count} | {timestamp}")
-                  print("-"*50)
                   if not res:
                       print("📥 Waiting for active torrents...")
                       all_done = False
@@ -102,10 +108,12 @@ jobs:
                           speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
                           eta_str = fmt_eta(t.get('eta', -1))
                           print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
-                          if prog < 100: all_done = False
-                  print("="*50 + "\n")
-                  if all_done and res: break
-              except Exception: pass
+                          if prog < 100:
+                              all_done = False
+                  if all_done and res:
+                      break
+              except Exception:
+                  pass
               time.sleep(20)
           EOF
 
@@ -139,14 +147,13 @@ jobs:
                   "--max-time", "3600"
               ]
               
-              # Run curl with unbuffered live stream output so progress prints immediately
               process = subprocess.Popen(
                   curl_cmd,
                   stdout=subprocess.PIPE,
                   stderr=subprocess.STDOUT,
                   text=True,
                   bufsize=1
-              ]
+              )
               
               output_lines = []
               for line in iter(process.stdout.readline, ''):
