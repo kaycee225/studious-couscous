@@ -150,7 +150,11 @@ jobs:
 
           QBIT_API = "http://127.0.0.1:8080/api/v2"
           LINK_URL = os.getenv("LINK_URL", "https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe")
-          SEASON_FILTER_REGEX = re.compile(r'(?i)(?<![a-z0-9])s0[1-4](?![a-z0-9])')
+
+          # Matches S01..S04 or Season 01..Season 04 / Season 1..Season 4 (not S010 or Season 10)
+          SEASON_FILTER_REGEX = re.compile(
+              r'(?i)(?:(?<![a-z0-9])s0[1-4](?![a-z0-9])|(?<![a-z0-9])season\s*0?[1-4](?![0-9]))'
+          )
 
           processed_links = set()
           stop_checker_event = threading.Event()
@@ -263,6 +267,7 @@ jobs:
 
                   matched_indices = []
                   unmatched_indices = []
+                  sample_unmatched = []
 
                   for f in files:
                       idx = f.get("index")
@@ -273,28 +278,46 @@ jobs:
                           matched_indices.append(str(idx))
                       else:
                           unmatched_indices.append(str(idx))
+                          if len(sample_unmatched) < 3:
+                              sample_unmatched.append(fname)
 
                   if not matched_indices:
-                      print(f"ℹ️ [{torrent_name[:35]}] No S01-S04 files found in torrent file list; keeping all {len(files)} file(s) enabled.", flush=True)
+                      print(f"ℹ️ [{torrent_name[:35]}] No S01-S04 files found in {len(files)} file(s); keeping all enabled.", flush=True)
                       return True
 
                   if unmatched_indices:
-                      requests.post(
+                      r_skip = requests.post(
                           f"{QBIT_API}/torrents/filePrio",
                           data={"hash": t_hash, "id": "|".join(unmatched_indices), "priority": "0"},
                           timeout=10
                       )
-                  requests.post(
+                      if r_skip.status_code != 200:
+                          print(f"⚠️ [{torrent_name[:35]}] filePrio skip returned HTTP {r_skip.status_code}", flush=True)
+
+                  r_keep = requests.post(
                       f"{QBIT_API}/torrents/filePrio",
                       data={"hash": t_hash, "id": "|".join(matched_indices), "priority": "1"},
                       timeout=10
                   )
+                  if r_keep.status_code != 200:
+                      print(f"⚠️ [{torrent_name[:35]}] filePrio keep returned HTTP {r_keep.status_code}", flush=True)
+
+                  verify_res = requests.get(f"{QBIT_API}/torrents/files", params={"hash": t_hash}, timeout=10)
+                  verified_skipped = 0
+                  if verify_res.status_code == 200:
+                      for vf in verify_res.json():
+                          if str(vf.get("index")) in set(unmatched_indices) and vf.get("priority") == 0:
+                              verified_skipped += 1
 
                   print(
-                      f"🎯 [{torrent_name[:35]}] S01-S04 filter applied: downloading {len(matched_indices)} matching file(s), skipping {len(unmatched_indices)} other file(s).",
+                      f"🎯 [{torrent_name[:35]}] S01-S04 filter: {len(matched_indices)} kept, "
+                      f"{verified_skipped}/{len(unmatched_indices)} skipped (verified prio=0).",
                       flush=True
                   )
-                  return True
+                  if sample_unmatched:
+                      print(f"   ↳ Sample skipped: {sample_unmatched}", flush=True)
+
+                  return verified_skipped == len(unmatched_indices)
               except Exception as e:
                   print(f"⚠️ Error applying S01-S04 filter for {torrent_name[:30]}: {e}", flush=True)
                   return False
