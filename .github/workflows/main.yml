@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - kaycee225-patch-8
+      - kaycee225-patch-9
 
 jobs:
   download-group-upload:
@@ -150,6 +150,7 @@ jobs:
 
           QBIT_API = "http://127.0.0.1:8080/api/v2"
           LINK_URL = os.getenv("LINK_URL", "https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe")
+          SEASON_FILTER_REGEX = re.compile(r'(?i)(?<![a-z0-9])s0[1-4](?![a-z0-9])')
 
           processed_links = set()
           stop_checker_event = threading.Event()
@@ -251,6 +252,53 @@ jobs:
                   print(f"⚠️ Error adding link {url[:40]}: {e}")
                   return False
 
+          def apply_s01_to_s04_filter(t_hash, torrent_name):
+              try:
+                  res = requests.get(f"{QBIT_API}/torrents/files", params={"hash": t_hash}, timeout=10)
+                  if res.status_code != 200:
+                      return False
+                  files = res.json()
+                  if not files:
+                      return False
+
+                  matched_indices = []
+                  unmatched_indices = []
+
+                  for f in files:
+                      idx = f.get("index")
+                      fname = f.get("name", "")
+                      if idx is None:
+                          continue
+                      if SEASON_FILTER_REGEX.search(fname):
+                          matched_indices.append(str(idx))
+                      else:
+                          unmatched_indices.append(str(idx))
+
+                  if not matched_indices:
+                      print(f"ℹ️ [{torrent_name[:35]}] No S01-S04 files found in torrent file list; keeping all {len(files)} file(s) enabled.", flush=True)
+                      return True
+
+                  if unmatched_indices:
+                      requests.post(
+                          f"{QBIT_API}/torrents/filePrio",
+                          data={"hash": t_hash, "id": "|".join(unmatched_indices), "priority": "0"},
+                          timeout=10
+                      )
+                  requests.post(
+                      f"{QBIT_API}/torrents/filePrio",
+                      data={"hash": t_hash, "id": "|".join(matched_indices), "priority": "1"},
+                      timeout=10
+                  )
+
+                  print(
+                      f"🎯 [{torrent_name[:35]}] S01-S04 filter applied: downloading {len(matched_indices)} matching file(s), skipping {len(unmatched_indices)} other file(s).",
+                      flush=True
+                  )
+                  return True
+              except Exception as e:
+                  print(f"⚠️ Error applying S01-S04 filter for {torrent_name[:30]}: {e}", flush=True)
+                  return False
+
           def silent_20s_link_checker():
               while not stop_checker_event.is_set():
                   try:
@@ -299,6 +347,7 @@ jobs:
               start_time = time.time()
               last_print_time = time.time()
               
+              filtered_hashes = set()
               completed_hashes = set()
               finished_competing_keys = set()
               cancelled_hashes = set()
@@ -323,6 +372,10 @@ jobs:
                           continue
                           
                       name = t['name']
+                      if t_hash not in filtered_hashes:
+                          if apply_s01_to_s04_filter(t_hash, name):
+                              filtered_hashes.add(t_hash)
+
                       comp_key = get_competing_key(name)
                       progress = t['progress'] * 100
                       state = t.get('state', 'unknown')
