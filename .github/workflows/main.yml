@@ -152,9 +152,21 @@ jobs:
           LINK_URL = os.getenv("LINK_URL", "https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe")
 
           # Matches S01..S04 or Season 01..Season 04 / Season 1..Season 4 (not S010 or Season 10)
-          SEASON_FILTER_REGEX = re.compile(
+          SEASON_KEEP_REGEX = re.compile(
               r'(?i)(?:(?<![a-z0-9])s0[1-4](?![a-z0-9])|(?<![a-z0-9])season\s*0?[1-4](?![0-9]))'
           )
+          # Explicitly excludes S05..S99 or Season 5..Season 99 on the file/parent folder
+          SEASON_SKIP_REGEX = re.compile(
+              r'(?i)(?:(?<![a-z0-9])s(?:0[5-9]|[1-9]\d)(?![a-z0-9])|(?<![a-z0-9])season\s*(?:0?[5-9]|[1-9]\d)(?![0-9]))'
+          )
+
+          def is_target_season_file(fname):
+              # Inspect only the file name and its immediate parent folder so pack root names (e.g. "S01-S08") don't match every file
+              parts = fname.replace("\\", "/").split("/")
+              local_target = "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+              if SEASON_SKIP_REGEX.search(local_target):
+                  return False
+              return bool(SEASON_KEEP_REGEX.search(local_target))
 
           processed_links = set()
           stop_checker_event = threading.Event()
@@ -274,7 +286,7 @@ jobs:
                       fname = f.get("name", "")
                       if idx is None:
                           continue
-                      if SEASON_FILTER_REGEX.search(fname):
+                      if is_target_season_file(fname):
                           matched_indices.append(str(idx))
                       else:
                           unmatched_indices.append(str(idx))
