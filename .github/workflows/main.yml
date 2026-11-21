@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - kaycee225-patch-9
+      - kaycee225-patch-10
 
 jobs:
   download-group-upload:
@@ -152,21 +152,15 @@ jobs:
           LINK_URL = os.getenv("LINK_URL", "https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe")
 
           # Matches S01..S04 or Season 01..Season 04 / Season 1..Season 4 (not S010 or Season 10)
-          SEASON_KEEP_REGEX = re.compile(
+          SEASON_EXCLUDE_REGEX = re.compile(
               r'(?i)(?:(?<![a-z0-9])s0[1-4](?![a-z0-9])|(?<![a-z0-9])season\s*0?[1-4](?![0-9]))'
           )
-          # Explicitly excludes S05..S99 or Season 5..Season 99 on the file/parent folder
-          SEASON_SKIP_REGEX = re.compile(
-              r'(?i)(?:(?<![a-z0-9])s(?:0[5-9]|[1-9]\d)(?![a-z0-9])|(?<![a-z0-9])season\s*(?:0?[5-9]|[1-9]\d)(?![0-9]))'
-          )
 
-          def is_target_season_file(fname):
-              # Inspect only the file name and its immediate parent folder so pack root names (e.g. "S01-S08") don't match every file
+          def is_excluded_season_file(fname):
+              # Inspect only the file name and its immediate parent folder so pack root names don't poison every file
               parts = fname.replace("\\", "/").split("/")
               local_target = "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
-              if SEASON_SKIP_REGEX.search(local_target):
-                  return False
-              return bool(SEASON_KEEP_REGEX.search(local_target))
+              return bool(SEASON_EXCLUDE_REGEX.search(local_target))
 
           processed_links = set()
           stop_checker_event = threading.Event()
@@ -268,7 +262,7 @@ jobs:
                   print(f"⚠️ Error adding link {url[:40]}: {e}")
                   return False
 
-          def apply_s01_to_s04_filter(t_hash, torrent_name):
+          def apply_skip_s01_to_s04_filter(t_hash, torrent_name):
               try:
                   res = requests.get(f"{QBIT_API}/torrents/files", params={"hash": t_hash}, timeout=10)
                   if res.status_code != 200:
@@ -277,30 +271,30 @@ jobs:
                   if not files:
                       return False
 
-                  matched_indices = []
-                  unmatched_indices = []
-                  sample_unmatched = []
+                  keep_indices = []
+                  skip_indices = []
+                  sample_skipped = []
 
                   for f in files:
                       idx = f.get("index")
                       fname = f.get("name", "")
                       if idx is None:
                           continue
-                      if is_target_season_file(fname):
-                          matched_indices.append(str(idx))
+                      if is_excluded_season_file(fname):
+                          skip_indices.append(str(idx))
+                          if len(sample_skipped) < 3:
+                              sample_skipped.append(fname)
                       else:
-                          unmatched_indices.append(str(idx))
-                          if len(sample_unmatched) < 3:
-                              sample_unmatched.append(fname)
+                          keep_indices.append(str(idx))
 
-                  if not matched_indices:
-                      print(f"ℹ️ [{torrent_name[:35]}] No S01-S04 files found in {len(files)} file(s); keeping all enabled.", flush=True)
+                  if not keep_indices:
+                      print(f"ℹ️ [{torrent_name[:35]}] All {len(files)} file(s) matched S01-S04; nothing left to download.", flush=True)
                       return True
 
-                  if unmatched_indices:
+                  if skip_indices:
                       r_skip = requests.post(
                           f"{QBIT_API}/torrents/filePrio",
-                          data={"hash": t_hash, "id": "|".join(unmatched_indices), "priority": "0"},
+                          data={"hash": t_hash, "id": "|".join(skip_indices), "priority": "0"},
                           timeout=10
                       )
                       if r_skip.status_code != 200:
@@ -308,7 +302,7 @@ jobs:
 
                   r_keep = requests.post(
                       f"{QBIT_API}/torrents/filePrio",
-                      data={"hash": t_hash, "id": "|".join(matched_indices), "priority": "1"},
+                      data={"hash": t_hash, "id": "|".join(keep_indices), "priority": "1"},
                       timeout=10
                   )
                   if r_keep.status_code != 200:
@@ -318,20 +312,20 @@ jobs:
                   verified_skipped = 0
                   if verify_res.status_code == 200:
                       for vf in verify_res.json():
-                          if str(vf.get("index")) in set(unmatched_indices) and vf.get("priority") == 0:
+                          if str(vf.get("index")) in set(skip_indices) and vf.get("priority") == 0:
                               verified_skipped += 1
 
                   print(
-                      f"🎯 [{torrent_name[:35]}] S01-S04 filter: {len(matched_indices)} kept, "
-                      f"{verified_skipped}/{len(unmatched_indices)} skipped (verified prio=0).",
+                      f"🎯 [{torrent_name[:35]}] Inverse S01-S04 filter: {len(keep_indices)} kept (everything else), "
+                      f"{verified_skipped}/{len(skip_indices)} S01-S04 skipped (verified prio=0).",
                       flush=True
                   )
-                  if sample_unmatched:
-                      print(f"   ↳ Sample skipped: {sample_unmatched}", flush=True)
+                  if sample_skipped:
+                      print(f"   ↳ Sample skipped (S01-S04): {sample_skipped}", flush=True)
 
-                  return verified_skipped == len(unmatched_indices)
+                  return verified_skipped == len(skip_indices)
               except Exception as e:
-                  print(f"⚠️ Error applying S01-S04 filter for {torrent_name[:30]}: {e}", flush=True)
+                  print(f"⚠️ Error applying inverse S01-S04 filter for {torrent_name[:30]}: {e}", flush=True)
                   return False
 
           def silent_20s_link_checker():
@@ -408,7 +402,7 @@ jobs:
                           
                       name = t['name']
                       if t_hash not in filtered_hashes:
-                          if apply_s01_to_s04_filter(t_hash, name):
+                          if apply_skip_s01_to_s04_filter(t_hash, name):
                               filtered_hashes.add(t_hash)
 
                       comp_key = get_competing_key(name)
